@@ -1,0 +1,30 @@
+# Secrets — never bake into image
+.env
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Git metadata
+.git/
+.gitignore
+
+# Docs (not needed at runtime)
+docs/
+
+# Large source PDF (already processed; not needed for viewer or API)
+*.pdf
+
+# Raw Datalab API cache (large, not needed for viewer or API)
+storage/raw_*.json
+
+# Node (legacy viewer scaffold)
+viewer/node_modules/
+viewer/dist/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
