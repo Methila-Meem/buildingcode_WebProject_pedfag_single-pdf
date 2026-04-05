@@ -708,9 +708,12 @@ class StructureParser:
         self._equation_counter   = 0
         self._figure_counter     = 0
         self._images_dict        = {}   # populated from datalab result
+        self._page_objects       = []   # raw page list for section_hierarchy lookup
+        self._clause_index       = {}   # clause_id -> Clause, for hier resolution
 
     def parse(self, datalab_result: dict) -> Document:
         self._images_dict = datalab_result.get("images") or {}
+        self._page_objects = (datalab_result.get("json") or {}).get("children", [])
         blocks = self._flatten_blocks(datalab_result)
         total_pages = (
             datalab_result.get("page_count") or
@@ -762,7 +765,8 @@ class StructureParser:
                 btype_raw = block.get("block_type", "")
                 html      = (block.get("html") or "").strip()
 
-                if btype_raw in ("PageFooter", "PageHeader"):
+                if btype_raw in ("PageFooter", "PageHeader",
+                                  "TableOfContents", "Footnote"):
                     continue
                 if not html:
                     continue
@@ -1006,39 +1010,138 @@ class StructureParser:
             # ── Headings ──────────────────────────────────────────────────────
             if btype == "heading":
 
-                if level <= 1:
-                    num, title = self._parse_part_heading(text)
-                    current_chapter = Chapter(
-                        id=f"CH-{num}", number=num,
-                        title=title, page_span=[page]
-                    )
-                    chapters.append(current_chapter)
-                    current_section = None
-                    current_clause  = None
+                if level == 1:
+                    # h1 → Division/top-level chapter, OR a section if numbered
+                    m_sec = RE_SECTION.match(text)
+                    if m_sec and current_chapter:
+                        # Mislabelled as h1 but is actually a section number
+                        num, title = m_sec.group(1), (m_sec.group(2).strip() or m_sec.group(1))
+                        current_section = self._make_section(num, title, page, current_chapter)
+                        current_clause = None
+                    else:
+                        num, title = self._parse_part_heading(text)
+                        current_chapter = Chapter(
+                            id=f"CH-{num}", number=num,
+                            title=title, page_span=[page]
+                        )
+                        chapters.append(current_chapter)
+                        current_section = None
+                        current_clause  = None
 
                 elif level == 2:
-                    m = RE_SECTION.match(text)
-                    if m and current_chapter:
-                        num, title = m.group(1), (m.group(2).strip() or m.group(1))
-                        current_section = Section(
-                            id=f"SEC-{num.replace('.', '-')}",
-                            number=num, title=title, page_span=[page]
+                    # h2 → Part heading (creates new Chapter) OR Section heading
+                    m_part = RE_PART.match(text)
+                    m_sec  = RE_SECTION.match(text)
+                    if m_part:
+                        # "Part 3 Fire Protection..." → new Chapter (with duplicate guard)
+                        part_num   = m_part.group(1)
+                        part_title = m_part.group(2).strip() or text
+                        existing_ch = next(
+                            (ch for ch in chapters if ch.id == f"CH-{part_num}"), None
                         )
-                        current_chapter.sections.append(current_section)
+                        if existing_ch:
+                            current_chapter = existing_ch
+                            # Keep the more descriptive (longer) title
+                            if part_title and len(part_title) > len(existing_ch.title):
+                                existing_ch.title = part_title
+                        else:
+                            current_chapter = Chapter(
+                                id=f"CH-{part_num}", number=part_num,
+                                title=part_title, page_span=[page]
+                            )
+                            chapters.append(current_chapter)
+                        current_section = None
+                        current_clause  = None
+                    elif m_sec and current_chapter:
+                        num, title = m_sec.group(1), (m_sec.group(2).strip() or m_sec.group(1))
+                        current_section = self._make_section(num, title, page, current_chapter)
                         current_clause = None
-                    # else: orphan heading — skip
+                    # else: orphan heading (preface/TOC/Division label) — skip
 
-                elif level == 3:
-                    # Could be 3-part "4.1.6." or plain subsection title
-                    m3 = RE_ARTICLE.match(text)
-                    if m3 and current_chapter:
+                elif level == 0:
+                    # SectionHeader without <h1>-<h6> tag.  In the full BCBC these
+                    # include both Part headings ("Part 4Structural Design") and
+                    # Article/Sentence clause headings ("3.2.2.62. Group D…").
+                    clean = re.sub(r'\s+', ' ', text).strip()
+                    m_part = RE_PART.match(clean)
+                    m4 = RE_SENTENCE.match(clean)
+                    m3 = RE_ARTICLE.match(clean)
+                    m2 = RE_SECTION.match(clean)
+                    if m_part:
+                        # "Part 4Structural Design" → Chapter.
+                        # Duplicate guard: each Part appears twice (cover page + content start).
+                        part_num   = m_part.group(1)
+                        part_title = m_part.group(2).strip() or clean
+                        existing_ch = next(
+                            (ch for ch in chapters if ch.id == f"CH-{part_num}"), None
+                        )
+                        if existing_ch:
+                            current_chapter = existing_ch
+                            if part_title and len(part_title) > len(existing_ch.title):
+                                existing_ch.title = part_title
+                        else:
+                            current_chapter = Chapter(
+                                id=f"CH-{part_num}", number=part_num,
+                                title=part_title, page_span=[page]
+                            )
+                            chapters.append(current_chapter)
+                        current_section = None
+                        current_clause  = None
+                    elif m4 and current_section:
+                        num   = m4.group(1)
+                        title = m4.group(2).lstrip(". ").strip() or num
+                        current_clause = self._make_clause(num, title, page,
+                                                           current_section)
+                    elif m3 and current_section:
                         num   = m3.group(1)
                         title = m3.group(2).lstrip(". ").strip() or num
-                        current_section = Section(
-                            id=f"SEC-{num.replace('.', '-')}",
-                            number=num, title=title, page_span=[page]
+                        current_clause = self._make_clause(num, title, page,
+                                                           current_section)
+                    elif m2 and current_chapter:
+                        num, sec_title = m2.group(1), (m2.group(2).strip() or m2.group(1))
+                        current_section = self._make_section(num, sec_title, page, current_chapter)
+                        current_clause = None
+                    elif current_section:
+                        # Plain label under an active section
+                        current_clause = self._make_clause("", clean, page,
+                                                           current_section)
+                    elif current_clause:
+                        # No active section — treat as bold label in current clause
+                        current_clause.content.append(
+                            ContentItem(type="text", value=f"**{clean}**"))
+                        if page not in current_clause.page_span:
+                            current_clause.page_span.append(page)
+                    # else: before any Part heading — skip
+
+                elif level == 3:
+                    # Could be a Part heading, 3-part section number, or plain label.
+                    m_part = RE_PART.match(text)
+                    m3     = RE_ARTICLE.match(text)
+                    if m_part:
+                        # Division A/B Part headings appear at h3 (pages 29–143).
+                        # Use duplicate guard: switch to existing chapter if already
+                        # created; otherwise create a new one.
+                        part_num   = m_part.group(1)
+                        part_title = m_part.group(2).strip() or text
+                        existing_ch = next(
+                            (ch for ch in chapters if ch.id == f"CH-{part_num}"), None
                         )
-                        current_chapter.sections.append(current_section)
+                        if existing_ch:
+                            current_chapter = existing_ch
+                            if part_title and len(part_title) > len(existing_ch.title):
+                                existing_ch.title = part_title
+                        else:
+                            current_chapter = Chapter(
+                                id=f"CH-{part_num}", number=part_num,
+                                title=part_title, page_span=[page]
+                            )
+                            chapters.append(current_chapter)
+                        current_section = None
+                        current_clause  = None
+                    elif m3 and current_chapter:
+                        num   = m3.group(1)
+                        title = m3.group(2).lstrip(". ").strip() or num
+                        current_section = self._make_section(num, title, page, current_chapter)
                         current_clause = None
                     elif current_section:
                         # Plain subsection title — treat as a label clause
@@ -1122,31 +1225,26 @@ class StructureParser:
                         add_text(text, page, has_inline_math)
                 elif m3 and current_chapter:
                     num   = m3.group(1)
+                    title = m3.group(2).lstrip(". ").strip() or num
                     sid   = f"SEC-{num.replace('.', '-')}"
-                    existing = any(s.id == sid
-                                   for s in current_chapter.sections)
-                    if not existing:
-                        title = m3.group(2).lstrip(". ").strip() or num
-                        current_section = Section(
-                            id=sid, number=num,
-                            title=title, page_span=[page]
-                        )
-                        current_chapter.sections.append(current_section)
-                        current_clause = None
+                    was_new = not any(s.id == sid
+                                      for s in current_chapter.sections)
+                    if was_new:
+                        current_section = self._make_section(num, title, page,
+                                                             current_chapter)
+                        current_clause  = None
                     else:
                         add_text(text, page, has_inline_math)
                 elif sec and current_chapter:
-                    sid = f"SEC-{sec.group(1).replace('.', '-')}"
-                    existing = any(s.id == sid
-                                   for s in current_chapter.sections)
-                    if not existing:
-                        current_section = Section(
-                            id=sid,
-                            number=sec.group(1),
-                            title=sec.group(2).strip(), page_span=[page]
-                        )
-                        current_chapter.sections.append(current_section)
-                        current_clause = None
+                    num   = sec.group(1)
+                    title = sec.group(2).strip()
+                    sid   = f"SEC-{num.replace('.', '-')}"
+                    was_new = not any(s.id == sid
+                                      for s in current_chapter.sections)
+                    if was_new:
+                        current_section = self._make_section(num, title, page,
+                                                             current_chapter)
+                        current_clause  = None
                     else:
                         add_text(text, page, has_inline_math)
                 else:
@@ -1154,17 +1252,21 @@ class StructureParser:
 
             # ── Equation ──────────────────────────────────────────────────────
             elif btype == "equation":
-                if current_clause:
+                target = current_clause or self._resolve_hier_target(
+                    block.get("raw", {}).get("section_hierarchy", {}),
+                    chapters, current_section
+                )
+                if target:
                     self._equation_counter += 1
                     eq_id  = f"EQ-{self._equation_counter}"
                     latex  = block.get("latex", text)
                     eq_obj = Equation(id=eq_id, latex=latex, page=page)
-                    current_clause.equations.append(eq_obj)
-                    current_clause.content.append(ContentItem(
+                    target.equations.append(eq_obj)
+                    target.content.append(ContentItem(
                         type="equation", latex=latex, value=eq_id
                     ))
-                    if page not in current_clause.page_span:
-                        current_clause.page_span.append(page)
+                    if page not in target.page_span:
+                        target.page_span.append(page)
 
             # ── Figure ────────────────────────────────────────────────────────
             elif btype == "figure":
@@ -1209,15 +1311,17 @@ class StructureParser:
                     self._figure_counter -= 1   # don't count it
                     continue
 
-                if current_clause:
-                    # Normal case: attach to active clause
-                    current_clause.figures.append(fig_obj)
-                    current_clause.content.append(content_item)
-                    if page not in current_clause.page_span:
-                        current_clause.page_span.append(page)
+                target = current_clause or self._resolve_hier_target(
+                    block.get("raw", {}).get("section_hierarchy", {}),
+                    chapters, current_section
+                )
+                if target:
+                    target.figures.append(fig_obj)
+                    target.content.append(content_item)
+                    if page not in target.page_span:
+                        target.page_span.append(page)
                 elif current_section:
-                    # Orphaned figure with no active clause
-                    # Create a minimal holder so it's not lost
+                    # Last-resort orphan clause so figure is not lost
                     orphan = self._make_clause(
                         "", caption or alt_text[:60] or f"Figure {fig_id}",
                         page, current_section
@@ -1232,7 +1336,11 @@ class StructureParser:
 
             # ── Table ─────────────────────────────────────────────────────────
             elif btype == "table":
-                if current_clause:
+                tbl_target = current_clause or self._resolve_hier_target(
+                    block.get("raw", {}).get("section_hierarchy", {}),
+                    chapters, current_section
+                )
+                if tbl_target:
                     self._table_counter += 1
                     tbl_id  = f"TBL-{self._table_counter}"
                     caption = pending_caption or f"Table {self._table_counter}"
@@ -1242,13 +1350,13 @@ class StructureParser:
                         id=tbl_id, caption=caption,
                         headers=headers, rows=rows, page=page
                     )
-                    current_clause.tables.append(tbl_obj)
-                    current_clause.content.append(ContentItem(
+                    tbl_target.tables.append(tbl_obj)
+                    tbl_target.content.append(ContentItem(
                         type="table", table_id=tbl_id,
                         value=caption
                     ))
-                    if page not in current_clause.page_span:
-                        current_clause.page_span.append(page)
+                    if page not in tbl_target.page_span:
+                        tbl_target.page_span.append(page)
                 else:
                     pending_caption = ""
 
@@ -1388,15 +1496,101 @@ class StructureParser:
     # Helpers
     # -------------------------------------------------------------------------
 
+    def _make_section(self, number: str, title: str,
+                      page: int, chapter: Chapter) -> Section:
+        """
+        Create a Section and append it to chapter, with duplicate-ID guard.
+        If a section with the same ID already exists (e.g. same Part number
+        appears in two Divisions), switch to it and update title if the new
+        one is more descriptive, rather than creating a second copy.
+        """
+        sid = f"SEC-{number.replace('.', '-')}"
+        existing = next((s for s in chapter.sections if s.id == sid), None)
+        if existing:
+            if title and len(title) > len(existing.title):
+                existing.title = title
+            return existing
+        sec = Section(id=sid, number=number, title=title, page_span=[page])
+        chapter.sections.append(sec)
+        return sec
+
+    def _resolve_hier_target(self, section_hierarchy: dict,
+                             chapters: list,
+                             current_section) -> Optional["Clause"]:
+        """
+        Use Datalab's section_hierarchy field to find the correct Clause for
+        content that arrived when current_clause was None.
+
+        Strategy (deepest level first):
+          1. 4-part number → look up CL-X-Y-Z-W in _clause_index.
+             If not there yet, find the parent section and create it.
+          2. 3-part number → return the last clause in that section.
+          3. Fall back to the last clause of current_section.
+        """
+        if not section_hierarchy or not self._page_objects:
+            return None
+
+        for level_key in sorted(section_hierarchy, key=lambda k: -int(k)):
+            ref_id = section_hierarchy[level_key]
+            m = re.match(r'/page/(\d+)/\w+/(\d+)', ref_id)
+            if not m:
+                continue
+            page_idx  = int(m.group(1))
+            block_idx = int(m.group(2))
+            if page_idx >= len(self._page_objects):
+                continue
+            children = self._page_objects[page_idx].get('children', [])
+            if block_idx >= len(children):
+                continue
+            heading_text = strip_html(children[block_idx].get('html', '')).strip()
+            if not heading_text:
+                continue
+
+            m4 = RE_SENTENCE.match(heading_text)
+            m3 = RE_ARTICLE.match(heading_text)
+
+            if m4:
+                num = m4.group(1)
+                cid = f"CL-{num.replace('.', '-')}"
+                if cid in self._clause_index:
+                    return self._clause_index[cid]
+                # Clause not created yet — find its parent section and create it
+                parts = num.split('.')
+                if len(parts) >= 3:
+                    parent_sid = f"SEC-{'-'.join(parts[:3])}"
+                    for ch in chapters:
+                        for sec in ch.sections:
+                            if sec.id == parent_sid:
+                                title = m4.group(2).lstrip('. ').strip() or num
+                                return self._make_clause(num, title,
+                                                         page_idx + 1, sec)
+                # No parent section found — fall through
+                continue
+
+            if m3:
+                sid = f"SEC-{m3.group(1).replace('.', '-')}"
+                for ch in chapters:
+                    for sec in ch.sections:
+                        if sec.id == sid and sec.clauses:
+                            return sec.clauses[-1]
+                continue
+
+        # Last resort: last clause of current_section
+        if current_section and current_section.clauses:
+            return current_section.clauses[-1]
+        return None
+
     def _make_clause(self, number: str, title: str,
                      page: int, section: Section) -> Clause:
-        """Create a new Clause and append it to the given section."""
+        """Create a new Clause, append it to the given section, and register
+        it in _clause_index so section_hierarchy resolution can find it."""
         cl = Clause(
             id=self._clause_id_for(number),
             number=number, title=title,
             page_span=[page]
         )
         section.clauses.append(cl)
+        self._clause_index[cl.id] = cl
         return cl
 
     def _clause_id_for(self, number: str) -> str:
@@ -1413,7 +1607,9 @@ class StructureParser:
         m = RE_PART.match(text)
         if m:
             return m.group(1), m.group(2).strip() or text
-        return str(self._chapter_counter), text
+        # Non-Part h1 heading (Division title, cover page, etc.) — use FRONT-N
+        # to avoid collision with real Part numbers (CH-1 … CH-11) created by h2.
+        return f"FRONT-{self._chapter_counter}", text
 
     def to_dict(self, document: Document) -> dict:
         return asdict(document)

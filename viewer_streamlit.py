@@ -380,6 +380,65 @@ div[data-testid="stHorizontalBlock"] div[data-testid="column"]:not(:first-child)
     letter-spacing: 0.07em; color: #4f46e5;
     margin-right: 6px; vertical-align: middle;
 }
+
+/* ── Section-based content view ──────────────────────────────────── */
+.content-nav-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0 14px 0;
+    border-bottom: 1px solid #e8ecf0;
+    margin-bottom: 20px;
+}
+.content-ch-front {
+    font-size: 1.9rem;
+    font-weight: 800;
+    color: #1e3a5f;
+    line-height: 1.25;
+    margin: 0 0 18px 0;
+    padding-bottom: 10px;
+    border-bottom: 3px solid #3b5bdb;
+}
+.content-ch-part {
+    /* handled by part-card */
+}
+.nav-btn-placeholder {
+    /* empty column placeholder so centering works */
+    width: 100%;
+}
+/* Make prev/next buttons look like the reference */
+.nav-prev-next button {
+    background: #f8f9fa !important;
+    border: 1px solid #dee2e6 !important;
+    color: #1e3a5f !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+}
+.nav-prev-next button:hover {
+    background: #e9ecef !important;
+    border-color: #adb5bd !important;
+}
+/* Sidebar tree improvements */
+[data-testid="stSidebar"] [data-testid="stExpander"] > details > summary {
+    font-weight: 700;
+    font-size: 0.83rem;
+    color: #1e3a5f;
+}
+[data-testid="stSidebar"] button[kind="secondary"] {
+    font-size: 0.78rem !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    padding: 3px 8px !important;
+    min-height: 28px !important;
+    color: #374151 !important;
+}
+[data-testid="stSidebar"] button[kind="primary"] {
+    font-size: 0.78rem !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    padding: 3px 8px !important;
+    min-height: 28px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1643,10 +1702,16 @@ def main():
     chapters    = doc.get("chapters", [])
     stats       = doc.get("_stats", {})
 
-    # selected_section_id controls which section shows clause sub-items in the sidebar
+    # Flat ordered list of (chapter, section) pairs for prev/next navigation
+    section_list = []
+    for _ch in chapters:
+        for _sec in _ch.get("sections", []):
+            section_list.append({"ch": _ch, "sec": _sec})
+
+    # selected_section_id: default to the very first section (Preface / front matter)
     if "selected_section_id" not in st.session_state:
-        if chapters and chapters[0].get("sections"):
-            st.session_state["selected_section_id"] = chapters[0]["sections"][0]["id"]
+        if section_list:
+            st.session_state["selected_section_id"] = section_list[0]["sec"]["id"]
         else:
             st.session_state["selected_section_id"] = None
 
@@ -1682,8 +1747,17 @@ def main():
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown(f"**{doc.get('title', 'Building Code')}**")
-        st.caption(f"{doc.get('source_pdf', '')}  ·  {doc.get('total_pages', '?')} pages")
+        doc_title_short = doc.get("title", "Building Code")
+        st.markdown(
+            f'<div style="font-weight:800;font-size:0.9rem;color:#1e3a5f;'
+            f'line-height:1.35;padding:4px 0 2px 0">{doc_title_short}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"{doc.get('total_pages','?')} pages · "
+            f"{sum(1 for ch in chapters if ch.get('number','').isdigit())} Parts · "
+            f"{sum(len(ch.get('sections',[])) for ch in chapters)} Sections"
+        )
         st.divider()
 
         mode = st.radio(
@@ -1695,86 +1769,136 @@ def main():
 
         if mode == "📑 Browse":
             sel_sec = st.session_state.get("selected_section_id")
+            # Find which chapter contains the selected section (for auto-expand)
+            selected_chapter_id = None
+            if sel_sec:
+                for ch in chapters:
+                    if any(s["id"] == sel_sec for s in ch.get("sections", [])):
+                        selected_chapter_id = ch["id"]
+                        break
+
             for chapter in chapters:
-                part_label = f"Part {chapter['number']} — {chapter['title']}"
-                with st.expander(part_label, expanded=True):
+                ch_num = chapter["number"]
+                ch_id  = chapter["id"]
+                if ch_num.isdigit():
+                    part_label = f"Part {ch_num} \u2014 {chapter['title']}"
+                else:
+                    part_label = chapter["title"]
+                # Only auto-expand chapter containing the selected section
+                is_active = (ch_id == selected_chapter_id)
+                with st.expander(part_label, expanded=is_active):
                     for section in chapter.get("sections", []):
                         sec_num   = section.get("number", "")
                         sec_title = section.get("title", "")
-                        depth     = len([p for p in sec_num.split('.') if p.strip()])
-                        indent    = "\u00a0\u00a0\u00a0\u00a0" * max(0, depth - 2)
+                        depth     = len([p for p in sec_num.split(".") if p.strip()])
+                        # Indent based on depth: depth=2 → 0, depth=3 → 1 level, etc.
+                        indent    = "\u00a0\u00a0\u00a0" * max(0, depth - 2)
                         is_sel    = (sel_sec == section["id"])
 
+                        # Compose label: number + truncated title
+                        if sec_num and sec_title:
+                            sec_label_text = f"{indent}{sec_num}  {sec_title[:34]}"
+                        elif sec_title:
+                            sec_label_text = f"{indent}{sec_title[:38]}"
+                        else:
+                            sec_label_text = f"{indent}{section['id']}"
+
                         if st.button(
-                            f"{indent}{sec_num}  {sec_title[:36]}",
-                            key=f"tree_sec_{section['id']}",
+                            sec_label_text,
+                            key=f"tree_sec_{ch_id}_{section['id']}",
                             use_container_width=True,
                             type="primary" if is_sel else "secondary",
                         ):
                             st.session_state["selected_section_id"] = section["id"]
-                            st.session_state["scroll_target"] = section["id"]
+                            st.session_state.pop("scroll_target", None)
                             st.rerun()
 
-                        # Expand clause sub-items for the selected section
+                        # Show clause sub-items for the selected section only
                         if is_sel:
                             for cl in section.get("clauses", []):
                                 cl_num = cl.get("number", "")
                                 if not cl_num:
                                     continue
-                                cl_depth  = len([p for p in cl_num.split('.') if p.strip()])
-                                cl_indent = "\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0" * max(0, cl_depth - 2)
-                                cl_title  = cl.get("title", "")[:28]
+                                cl_depth  = len([p for p in cl_num.split(".") if p.strip()])
+                                cl_indent = "\u00a0\u00a0\u00a0\u00a0\u00a0" * max(0, cl_depth - 2)
+                                cl_title  = cl.get("title", "")[:26]
                                 if st.button(
-                                    f"{cl_indent}· {cl_num}  {cl_title}",
-                                    key=f"tree_cl_{cl['id']}",
+                                    f"{cl_indent}\u00b7 {cl_num}  {cl_title}",
+                                    key=f"tree_cl_{ch_id}_{cl['id']}",
                                     use_container_width=True,
                                 ):
                                     st.session_state["scroll_target"] = cl["id"]
                                     st.rerun()
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # BROWSE — full document in one continuous scroll
+    # BROWSE — section-based view with Previous / Next navigation
     # ═══════════════════════════════════════════════════════════════════════════
     if mode == "📑 Browse":
-        # Top document header bar
-        doc_title = doc.get("title", "BC Building Code")
-        source    = doc.get("source_pdf", "")
-        pages     = doc.get("total_pages", "?")
-        st.markdown(
-            f'<div class="doc-top-bar">'
-            f'<div>'
-            f'<div class="doc-title">&#128203; {doc_title}</div>'
-            f'<div class="doc-subtitle">{source}&nbsp;&nbsp;·&nbsp;&nbsp;{pages} pages</div>'
-            f'</div>'
-            f'<div class="doc-nav-hint">Use sidebar to navigate &amp; jump to sections</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        sel_sec = st.session_state.get("selected_section_id")
 
-        # Render ALL parts → sections → clauses in one scroll
-        for chapter in chapters:
-            # Anchor for this part
-            st.markdown(f'<div id="anchor-{chapter["id"]}"></div>', unsafe_allow_html=True)
+        # Locate current position in the flat section list
+        current_ch  = None
+        current_sec = None
+        current_idx = None
+        for _i, _item in enumerate(section_list):
+            if _item["sec"]["id"] == sel_sec:
+                current_ch  = _item["ch"]
+                current_sec = _item["sec"]
+                current_idx = _i
+                break
 
-            # Part card
-            st.markdown(
-                f'<div class="part-card">'
-                f'<div class="part-card-badge">Part {chapter["number"]}</div>'
-                f'<div class="part-card-title">{chapter["title"]}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+        # ── Previous / Next navigation bar ───────────────────────────────────
+        prev_item = section_list[current_idx - 1] if (current_idx is not None and current_idx > 0) else None
+        next_item = section_list[current_idx + 1] if (current_idx is not None and current_idx < len(section_list) - 1) else None
 
-            for section in chapter.get("sections", []):
-                sec_id    = section["id"]
-                sec_num   = section.get("number", "")
-                sec_title = section.get("title", "")
-                sec_label = get_hierarchy_label(sec_num)
+        col_prev, _col_mid, col_next = st.columns([2, 8, 2])
+        with col_prev:
+            st.markdown('<div class="nav-prev-next">', unsafe_allow_html=True)
+            if prev_item:
+                if st.button("← Previous", key="nav_prev", use_container_width=True):
+                    st.session_state["selected_section_id"] = prev_item["sec"]["id"]
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col_next:
+            st.markdown('<div class="nav-prev-next">', unsafe_allow_html=True)
+            if next_item:
+                if st.button("Next →", key="nav_next", use_container_width=True):
+                    st.session_state["selected_section_id"] = next_item["sec"]["id"]
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
-                # Anchor for this section
-                st.markdown(f'<div id="anchor-{sec_id}"></div>', unsafe_allow_html=True)
+        # ── Chapter / Part context heading ────────────────────────────────────
+        if current_ch:
+            ch_num = current_ch["number"]
+            ch_title = current_ch["title"]
+            st.markdown(f'<div id="anchor-{current_ch["id"]}"></div>', unsafe_allow_html=True)
 
-                # Section header
+            if ch_num.isdigit():
+                # Numeric Part — use the existing styled part-card
+                st.markdown(
+                    f'<div class="part-card">'
+                    f'<div class="part-card-badge">Part {ch_num}</div>'
+                    f'<div class="part-card-title">{ch_title}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                # Front matter / Preface / Division — large prominent heading
+                st.markdown(
+                    f'<h1 class="content-ch-front">{ch_title}</h1>',
+                    unsafe_allow_html=True,
+                )
+
+        # ── Section heading ───────────────────────────────────────────────────
+        if current_sec:
+            sec_id    = current_sec["id"]
+            sec_num   = current_sec.get("number", "")
+            sec_title = current_sec.get("title", "")
+            sec_label = get_hierarchy_label(sec_num)
+
+            st.markdown(f'<div id="anchor-{sec_id}"></div>', unsafe_allow_html=True)
+
+            if sec_num or sec_title:
                 st.markdown(
                     f'<div class="section-header">'
                     f'<span class="sec-badge">{sec_label}</span>'
@@ -1783,16 +1907,24 @@ def main():
                     unsafe_allow_html=True,
                 )
 
-                for clause in section.get("clauses", []):
+            # ── Render all clauses in this section only ───────────────────────
+            clauses_in_sec = current_sec.get("clauses", [])
+            if not clauses_in_sec:
+                st.info("No clauses extracted for this section.")
+            else:
+                for clause in clauses_in_sec:
                     cid = clause["id"]
                     st.markdown(f'<div id="anchor-{cid}"></div>', unsafe_allow_html=True)
-                    render_clause(clause, flags, show_flag_ui=False, id_index=id_index)
+                    render_clause(clause, flags, show_flag_ui=True, id_index=id_index)
                     st.markdown(
                         '<hr style="margin:6px 0 14px 0;border:none;border-top:1px solid #f0f0f0;">',
                         unsafe_allow_html=True,
                     )
 
-        # Inject JS scroll to the requested anchor
+        elif not section_list:
+            st.warning("No sections found in the document.")
+
+        # ── Inject JS scroll to the requested anchor ──────────────────────────
         scroll_target = st.session_state.pop("scroll_target", None)
         if scroll_target:
             st.components.v1.html(
@@ -1860,7 +1992,8 @@ def main():
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Pages",    doc.get("total_pages", "?"))
-        c2.metric("Parts",    len(chapters))
+        real_parts = sum(1 for ch in chapters if ch.get("number", "").isdigit())
+        c2.metric("Parts",    real_parts)
         c3.metric("Sections", sum(len(ch.get("sections", [])) for ch in chapters))
         c4.metric("Clauses",  len(clause_list))
 
