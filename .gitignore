@@ -7,10 +7,6 @@ __pycache__/
 .venv/
 venv/
  
-# Output data
-storage/output/
-*.json
- 
 # OS
 .DS_Store
 Thumbs.db
