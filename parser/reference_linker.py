@@ -91,6 +91,43 @@ def build_id_index(document_dict: dict) -> dict:
     return index
 
 
+_RE_4PART_TITLE = re.compile(r'^(\d+\.\d+\.\d+\.\d+)')
+
+
+def build_title_number_index(document_dict: dict) -> dict:
+    """
+    Build a secondary lookup: derived_cl_id -> actual_clause_id
+
+    For every CL-AUTO-N clause whose title starts with a 4-part clause
+    number (e.g. "1.1.1.1. Compliance with this Code"), we register the
+    mapping CL-1-1-1-1 -> CL-AUTO-N.
+
+    This covers clauses that were assigned CL-AUTO IDs by the parser
+    because their heading came in at a level (h5) that the old handler
+    always treated as unnumbered.  The reference linker generates target
+    CL-1-1-1-1 from "Article 1.1.1.1" — without this index such
+    references would always be unresolved even though the content exists.
+
+    Only the first occurrence wins so that duplicate headings (e.g. the
+    same Division-A clause appearing in both the cover chapter and the
+    content chapter) consistently resolve to the first parse encounter.
+    """
+    title_num_index: dict = {}
+    for chapter in document_dict.get("chapters", []):
+        for section in chapter.get("sections", []):
+            for clause in section.get("clauses", []):
+                # Skip clauses that already have a proper number — they are
+                # already reachable via their CL-X-X-X-X id in id_index.
+                if clause.get("number"):
+                    continue
+                m = _RE_4PART_TITLE.match(clause.get("title", ""))
+                if m:
+                    derived_id = "CL-" + m.group(1).replace(".", "-")
+                    if derived_id not in title_num_index:
+                        title_num_index[derived_id] = clause["id"]
+    return title_num_index
+
+
 def build_note_index(document_dict: dict) -> dict:
     """
     Build a note reference -> [clause_id, ...] lookup.
@@ -189,19 +226,25 @@ def _normalize_ref(s: str) -> str:
     return re.sub(r'[.\-]', '', s.rstrip('.')).lower()
 
 
-def _ref_to_id(ref: str, kind: str, id_index: dict) -> Optional[str]:
+def _ref_to_id(ref: str, kind: str, id_index: dict,
+               title_num_index: Optional[dict] = None) -> Optional[str]:
     """
     Convert a standard reference string to a document node ID.
 
-    FIX (Bug 2 + Enhancement 2):
+    Fix 1 — CL-AUTO fallback via title_num_index:
+      For Sentence/Article/Clause references, if the derived CL-X-X-X-X id is
+      not in id_index, check title_num_index (maps derived id -> actual CL-AUTO
+      id for clauses whose number is only in their title).
+
+    Fix 5 — SEC→CL fallback:
+      For Subsection/Section references, if the derived SEC-X-X-X id is not in
+      id_index, try a CL-X-X-X fallback (handles cases where the parser created
+      a Clause rather than a Section for 3-part numbered headings).
+
+    Also:
       - Strip trailing dots from Figure/Table refs before caption lookup.
-        The regex r'[\\d\\.]+[\\w\\.\\-]*' captures a trailing period when the
-        reference appears mid-sentence (e.g. "Table 4.1.3.2.-B."), causing
-        the substring check  "4.1.3.2.-b."  to fail against caption key
-        "_cap_Table 4.1.3.2.-B" (no trailing dot).
-      - Use normalized comparison (dots/hyphens stripped) so that source-PDF
-        typos like "Figure 4.1.76.-C" (missing dot) resolve correctly when
-        the reference text says "Figure 4.1.7.6.-C".
+      - Use normalized comparison (dots/hyphens stripped) for fuzzy caption
+        matching so source-PDF typos resolve correctly.
 
     Subsection always maps to SEC- regardless of the number of dot-parts.
     "4.1.4" has 3 parts but is still a Subsection (SEC-4-1-4), not a Clause.
@@ -212,10 +255,22 @@ def _ref_to_id(ref: str, kind: str, id_index: dict) -> Optional[str]:
     normalized = re.sub(r'[.\-]', '-', ref_clean).strip('-')
 
     if kind_lower in ("sentence", "article", "clause"):
-        return f"CL-{normalized}"
+        target = f"CL-{normalized}"
+        # Fix 1: if not found directly, look up via title-number index
+        if target not in id_index and title_num_index:
+            actual = title_num_index.get(target)
+            if actual:
+                return actual
+        return target
 
     if kind_lower in ("subsection", "section"):
-        return f"SEC-{normalized}"
+        target = f"SEC-{normalized}"
+        # Fix 5: if SEC- not found, try matching as a Clause (CL-)
+        if target not in id_index:
+            cl_target = f"CL-{normalized}"
+            if cl_target in id_index:
+                return cl_target
+        return target
 
     if kind_lower == "table":
         ref_norm = _normalize_ref(ref_clean)
@@ -327,8 +382,9 @@ def link_references(document_dict: dict) -> dict:
       resolved=True  -> target_ids contains one or more CL-AUTO IDs (clickable)
       resolved=False -> external appendix note (styled badge, not clickable)
     """
-    id_index   = build_id_index(document_dict)
-    note_index = build_note_index(document_dict)
+    id_index        = build_id_index(document_dict)
+    note_index      = build_note_index(document_dict)
+    title_num_index = build_title_number_index(document_dict)
 
     total_refs    = resolved_refs    = 0
     total_notes   = resolved_notes   = 0
@@ -352,7 +408,7 @@ def link_references(document_dict: dict) -> dict:
                             continue
                         seen_refs.add(key)
                         total_refs += 1
-                        target_id  = _ref_to_id(det["ref"], det["kind"], id_index)
+                        target_id  = _ref_to_id(det["ref"], det["kind"], id_index, title_num_index)
                         is_resolved = bool(target_id and target_id in id_index)
                         if is_resolved:
                             resolved_refs += 1

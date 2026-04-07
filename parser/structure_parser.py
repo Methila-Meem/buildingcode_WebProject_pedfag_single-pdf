@@ -1177,18 +1177,34 @@ class StructureParser:
                                                            current_section)
 
                 elif level == 5:
-                    # Two cases:
-                    # a) "Notes to Table X" / "Notes to Figure X" subsections
-                    # b) Appendix entries: "A-4.1.3.2.(2) Load Combinations."
-                    # Both become new clauses that receive following content.
+                    # Three cases:
+                    # a) Numbered clause headings (e.g. "1.1.1.1. Compliance with this Code")
+                    #    — Fix 2: detect and assign proper clause number instead of CL-AUTO
+                    # b) "Notes to Table X" / "Notes to Figure X" subsections
+                    # c) Appendix entries: "A-4.1.3.2.(2) Load Combinations."
+                    # Cases (b) and (c) become unnumbered CL-AUTO clauses.
                     clean = re.sub(r'\s+', ' ', strip_html(text)).strip()
                     if current_section:
-                        current_clause = self._make_clause("", clean, page,
-                                                           current_section)
+                        m4 = RE_SENTENCE.match(clean)
+                        m3 = RE_ARTICLE.match(clean)
+                        if m4:
+                            num   = m4.group(1)
+                            title = m4.group(2).lstrip(". ").strip() or num
+                            current_clause = self._make_clause(num, title, page,
+                                                               current_section)
+                        elif m3:
+                            num   = m3.group(1)
+                            title = m3.group(2).lstrip(". ").strip() or num
+                            current_clause = self._make_clause(num, title, page,
+                                                               current_section)
+                        else:
+                            current_clause = self._make_clause("", clean, page,
+                                                               current_section)
 
                 elif level >= 6:
                     # Sub-article, appendix sub-entry, or importance category
                     # e.g. "Low Importance Category" / "A-4.1.8.2.(1) Notation"
+                    # Fix 3: detect numbered headings before creating CL-AUTO.
                     clean = re.sub(r'\s+', ' ', strip_html(text)).strip()
                     if current_clause is not None:
                         # Sub-labels like "Low/Normal/High Importance Category"
@@ -1198,8 +1214,21 @@ class StructureParser:
                         if page not in current_clause.page_span:
                             current_clause.page_span.append(page)
                     elif current_section:
-                        current_clause = self._make_clause("", clean, page,
-                                                           current_section)
+                        m4 = RE_SENTENCE.match(clean)
+                        m3 = RE_ARTICLE.match(clean)
+                        if m4:
+                            num   = m4.group(1)
+                            title = m4.group(2).lstrip(". ").strip() or num
+                            current_clause = self._make_clause(num, title, page,
+                                                               current_section)
+                        elif m3:
+                            num   = m3.group(1)
+                            title = m3.group(2).lstrip(". ").strip() or num
+                            current_clause = self._make_clause(num, title, page,
+                                                               current_section)
+                        else:
+                            current_clause = self._make_clause("", clean, page,
+                                                               current_section)
 
             # ── Text ──────────────────────────────────────────────────────────
             elif btype == "text":
@@ -1512,8 +1541,18 @@ class StructureParser:
         If a section with the same ID already exists (e.g. same Part number
         appears in two Divisions), switch to it and update title if the new
         one is more descriptive, rather than creating a second copy.
+
+        Fix 4 — unique IDs for non-numeric section names:
+          Standard sections have numeric dot-notation numbers (e.g. "4.1") and
+          get the usual SEC-4-1 id.  Non-numeric numbers (e.g. "Preface") are
+          prefixed with the chapter id to prevent cross-chapter collisions
+          (previously all 35 chapters created SEC-Preface).
         """
-        sid = f"SEC-{number.replace('.', '-')}"
+        if re.match(r'^\d', number):
+            sid = f"SEC-{number.replace('.', '-')}"
+        else:
+            safe = re.sub(r'[^A-Za-z0-9]+', '-', number).strip('-')
+            sid = f"SEC-{chapter.id}-{safe}"
         existing = next((s for s in chapter.sections if s.id == sid), None)
         if existing:
             if title and len(title) > len(existing.title):
