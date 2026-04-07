@@ -947,6 +947,7 @@ class StructureParser:
         pending_caption: str = ""   # caption buffer for next Table block
 
         def add_text(text: str, page: int, has_inline_math: bool = False):
+            nonlocal current_chapter, current_section, current_clause
             """
             Add text content to the current clause.
 
@@ -961,8 +962,16 @@ class StructureParser:
             as a large centered display equation, completely breaking sentence
             flow and looking worse than Datalab's raw output.
             """
-            if not text or not current_clause:
+            if not text:
                 return
+            if not current_clause:
+                # Rescue orphaned text
+                if not current_chapter:
+                    current_chapter = Chapter(id="CH-FRONT-0", number="FRONT-0", title="Preamble / Front Matter", page_span=[page])
+                    chapters.append(current_chapter)
+                if not current_section:
+                    current_section = self._make_section("Preface", "Document Preface", page, current_chapter)
+                current_clause = self._make_clause("", "Orphaned Content", page, current_section)
 
             if has_inline_math:
                 # Convert to a single markdown string with $...$ inline math
