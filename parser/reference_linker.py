@@ -60,35 +60,90 @@ RE_NOTE = re.compile(
 # Index builders
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _iter_clauses(document_dict: dict):
+    """
+    Yield every clause dict from the new BCBC 2024 schema:
+        divisions -> parts -> sections -> subsections -> clauses
+        divisions -> appendices -> sections -> subsections -> clauses
+    Also yields clauses attached directly to sections (fallback).
+    """
+    for div in document_dict.get("divisions", []):
+        for part in div.get("parts", []):
+            for section in part.get("sections", []):
+                for subsec in section.get("subsections", []):
+                    for clause in subsec.get("clauses", []):
+                        yield clause
+                for clause in section.get("clauses", []):
+                    yield clause
+        for appendix in div.get("appendices", []):
+            for section in appendix.get("sections", []):
+                for subsec in section.get("subsections", []):
+                    for clause in subsec.get("clauses", []):
+                        yield clause
+                for clause in section.get("clauses", []):
+                    yield clause
+
+
 def build_id_index(document_dict: dict) -> dict:
     """
     Build flat {id -> node} lookup from the full document tree.
     Also builds caption-based lookups for Tables and Figures.
+    Supports both old schema (chapters) and new schema (divisions).
     """
     index = {}
 
+    # ── New schema: divisions -> parts -> sections -> subsections -> clauses ──
+    for div in document_dict.get("divisions", []):
+        index[div["id"]] = div
+        for part in div.get("parts", []):
+            index[part["id"]] = part
+            for section in part.get("sections", []):
+                index[section["id"]] = section
+                for subsec in section.get("subsections", []):
+                    index[subsec["id"]] = subsec
+                    for clause in subsec.get("clauses", []):
+                        index[clause["id"]] = clause
+                        _index_clause_assets(clause, index)
+                for clause in section.get("clauses", []):
+                    index[clause["id"]] = clause
+                    _index_clause_assets(clause, index)
+        for appendix in div.get("appendices", []):
+            index[appendix["id"]] = appendix
+            for section in appendix.get("sections", []):
+                index[section["id"]] = section
+                for subsec in section.get("subsections", []):
+                    index[subsec["id"]] = subsec
+                    for clause in subsec.get("clauses", []):
+                        index[clause["id"]] = clause
+                        _index_clause_assets(clause, index)
+                for clause in section.get("clauses", []):
+                    index[clause["id"]] = clause
+                    _index_clause_assets(clause, index)
+
+    # ── Old schema fallback: chapters -> sections -> clauses ─────────────────
     for chapter in document_dict.get("chapters", []):
         index[chapter["id"]] = chapter
-
         for section in chapter.get("sections", []):
             index[section["id"]] = section
-
             for clause in section.get("clauses", []):
                 index[clause["id"]] = clause
-
-                for table in clause.get("tables", []):
-                    index[table["id"]] = table
-                    cap = table.get("caption", "")
-                    if cap:
-                        index[f"_cap_{cap}"] = table
-
-                for figure in clause.get("figures", []):
-                    index[figure["id"]] = figure
-                    cap = figure.get("caption", "")
-                    if cap:
-                        index[f"_cap_{cap}"] = figure
+                _index_clause_assets(clause, index)
 
     return index
+
+
+def _index_clause_assets(clause: dict, index: dict):
+    """Register tables and figures from a clause into the id index."""
+    for table in clause.get("tables", []):
+        index[table["id"]] = table
+        cap = table.get("caption", "")
+        if cap:
+            index[f"_cap_{cap}"] = table
+    for figure in clause.get("figures", []):
+        index[figure["id"]] = figure
+        cap = figure.get("caption", "")
+        if cap:
+            index[f"_cap_{cap}"] = figure
 
 
 _RE_4PART_TITLE = re.compile(r'^(\d+\.\d+\.\d+\.\d+)')
@@ -113,11 +168,20 @@ def build_title_number_index(document_dict: dict) -> dict:
     content chapter) consistently resolve to the first parse encounter.
     """
     title_num_index: dict = {}
+    for clause in _iter_clauses(document_dict):
+        # Skip clauses that already have a proper number — they are
+        # already reachable via their CL-X-X-X-X id in id_index.
+        if clause.get("number"):
+            continue
+        m = _RE_4PART_TITLE.match(clause.get("title", ""))
+        if m:
+            derived_id = "CL-" + m.group(1).replace(".", "-")
+            if derived_id not in title_num_index:
+                title_num_index[derived_id] = clause["id"]
+    # Old schema fallback
     for chapter in document_dict.get("chapters", []):
         for section in chapter.get("sections", []):
             for clause in section.get("clauses", []):
-                # Skip clauses that already have a proper number — they are
-                # already reachable via their CL-X-X-X-X id in id_index.
                 if clause.get("number"):
                     continue
                 m = _RE_4PART_TITLE.match(clause.get("title", ""))
@@ -160,45 +224,42 @@ def build_note_index(document_dict: dict) -> dict:
     )
     note_idx = {}
 
+    def _process_clause_for_notes(clause):
+        cid = clause.get("id", "")
+        if not cid.startswith("CL-AUTO"):
+            return
+        title = clause.get("title", "")
+        # Pass 1: index the clause title
+        if title.startswith("A-"):
+            m = RE_A_TITLE.match(title)
+            if m:
+                key = m.group(1).strip().rstrip('.')
+                if cid not in note_idx.get(key, []):
+                    note_idx.setdefault(key, []).append(cid)
+        # Pass 2: index embedded A- sub-entries in content text
+        for item in clause.get("content", []):
+            if item.get("type") not in ("text", "sub_clause"):
+                continue
+            val = item.get("value", "").strip()
+            if not val.startswith("A-"):
+                continue
+            m = RE_A_TITLE.match(val)
+            if not m:
+                continue
+            full_key = m.group(1).strip().rstrip('.')
+            base_key = re.sub(r'\.\(\d+\).*$', '', full_key)
+            for key in {full_key, base_key}:
+                if cid not in note_idx.get(key, []):
+                    note_idx.setdefault(key, []).append(cid)
+
+    # Walk new schema
+    for clause in _iter_clauses(document_dict):
+        _process_clause_for_notes(clause)
+    # Old schema fallback
     for chapter in document_dict.get("chapters", []):
         for section in chapter.get("sections", []):
             for clause in section.get("clauses", []):
-                cid = clause.get("id", "")
-                if not cid.startswith("CL-AUTO"):
-                    continue
-
-                title = clause.get("title", "")
-
-                # ── Pass 1: index the clause title ────────────────────────────
-                if title.startswith("A-"):
-                    m = RE_A_TITLE.match(title)
-                    if m:
-                        key = m.group(1).strip().rstrip('.')
-                        if cid not in note_idx.get(key, []):
-                            note_idx.setdefault(key, []).append(cid)
-
-                # ── Pass 2: index embedded A- sub-entries in content text ─────
-                # Text items whose value begins with an A- identifier are
-                # sub-entries of the appendix that share this clause's page.
-                # Navigating to the containing clause is the best we can do
-                # without separate clause objects for each sub-entry.
-                for item in clause.get("content", []):
-                    if item.get("type") not in ("text", "sub_clause"):
-                        continue
-                    val = item.get("value", "").strip()
-                    if not val.startswith("A-"):
-                        continue
-                    m = RE_A_TITLE.match(val)
-                    if not m:
-                        continue
-                    # Extract base identifier (without sentence number) as key
-                    full_key = m.group(1).strip().rstrip('.')
-                    # Also register a base-only key (strip trailing .(N) part)
-                    base_key = re.sub(r'\.\(\d+\).*$', '', full_key)
-
-                    for key in {full_key, base_key}:
-                        if cid not in note_idx.get(key, []):
-                            note_idx.setdefault(key, []).append(cid)
+                _process_clause_for_notes(clause)
 
     return note_idx
 
@@ -389,58 +450,61 @@ def link_references(document_dict: dict) -> dict:
     total_refs    = resolved_refs    = 0
     total_notes   = resolved_notes   = 0
 
+    # Walk new schema (divisions) + old schema fallback (chapters)
+    all_clauses = list(_iter_clauses(document_dict))
     for chapter in document_dict.get("chapters", []):
         for section in chapter.get("sections", []):
-            for clause in section.get("clauses", []):
+            all_clauses.extend(section.get("clauses", []))
 
-                texts = [clause.get("title", "")]
-                for item in clause.get("content", []):
-                    if item.get("type") in ("text", "sub_clause"):
-                        texts.append(item.get("value", ""))
+    for clause in all_clauses:
+        texts = [clause.get("title", "")]
+        for item in clause.get("content", []):
+            if item.get("type") in ("text", "sub_clause"):
+                texts.append(item.get("value", ""))
 
-                # ── Standard references ───────────────────────────────────
-                linked     = []
-                seen_refs  = set()
-                for text in texts:
-                    for det in _extract_refs_from_text(text):
-                        key = (det["kind"].lower(), det["ref"])
-                        if key in seen_refs:
-                            continue
-                        seen_refs.add(key)
-                        total_refs += 1
-                        target_id  = _ref_to_id(det["ref"], det["kind"], id_index, title_num_index)
-                        is_resolved = bool(target_id and target_id in id_index)
-                        if is_resolved:
-                            resolved_refs += 1
-                        linked.append({
-                            "text":      det["raw"],
-                            "kind":      det["kind"],
-                            "target_id": target_id,
-                            "resolved":  is_resolved,
-                        })
-                clause["references"] = linked
+        # ── Standard references ───────────────────────────────────────────
+        linked    = []
+        seen_refs = set()
+        for text in texts:
+            for det in _extract_refs_from_text(text):
+                key = (det["kind"].lower(), det["ref"])
+                if key in seen_refs:
+                    continue
+                seen_refs.add(key)
+                total_refs += 1
+                target_id   = _ref_to_id(det["ref"], det["kind"], id_index, title_num_index)
+                is_resolved = bool(target_id and target_id in id_index)
+                if is_resolved:
+                    resolved_refs += 1
+                linked.append({
+                    "text":      det["raw"],
+                    "kind":      det["kind"],
+                    "target_id": target_id,
+                    "resolved":  is_resolved,
+                })
+        clause["references"] = linked
 
-                # ── Note references ───────────────────────────────────────
-                note_linked = []
-                seen_notes  = set()
-                for text in texts:
-                    for det in _extract_notes_from_text(text):
-                        nr = det["note_ref"]
-                        if nr in seen_notes:
-                            continue
-                        seen_notes.add(nr)
-                        total_notes += 1
-                        target_ids  = _resolve_note(nr, note_index)
-                        is_resolved = len(target_ids) > 0
-                        if is_resolved:
-                            resolved_notes += 1
-                        note_linked.append({
-                            "raw":        det["raw"],
-                            "note_ref":   nr,
-                            "target_ids": target_ids,
-                            "resolved":   is_resolved,
-                        })
-                clause["note_refs"] = note_linked
+        # ── Note references ───────────────────────────────────────────────
+        note_linked = []
+        seen_notes  = set()
+        for text in texts:
+            for det in _extract_notes_from_text(text):
+                nr = det["note_ref"]
+                if nr in seen_notes:
+                    continue
+                seen_notes.add(nr)
+                total_notes += 1
+                target_ids  = _resolve_note(nr, note_index)
+                is_resolved = len(target_ids) > 0
+                if is_resolved:
+                    resolved_notes += 1
+                note_linked.append({
+                    "raw":        det["raw"],
+                    "note_ref":   nr,
+                    "target_ids": target_ids,
+                    "resolved":   is_resolved,
+                })
+        clause["note_refs"] = note_linked
 
     ref_rate  = round(resolved_refs  / total_refs  * 100, 1) if total_refs  else 0.0
     note_rate = round(resolved_notes / total_notes * 100, 1) if total_notes else 0.0

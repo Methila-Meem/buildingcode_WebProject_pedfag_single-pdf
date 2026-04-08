@@ -1,0 +1,1 @@
+divisions -> parts -> sections -> subsections -> clauses

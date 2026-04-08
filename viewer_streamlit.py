@@ -45,11 +45,24 @@ def load_flags() -> dict:
 
 
 def build_clause_list(doc: dict) -> list:
+    """
+    Collect all clauses from the new schema:
+        divisions -> parts -> sections -> subsections -> clauses
+    Also collects clauses attached directly to sections (fallback).
+    Includes appendices under each division.
+    """
     clauses = []
-    for ch in doc.get("chapters", []):
-        for sec in ch.get("sections", []):
-            for cl in sec.get("clauses", []):
-                clauses.append(cl)
+    for div in doc.get("divisions", []):
+        for part in div.get("parts", []):
+            for sec in part.get("sections", []):
+                for sub in sec.get("subsections", []):
+                    clauses.extend(sub.get("clauses", []))
+                clauses.extend(sec.get("clauses", []))
+        for appendix in div.get("appendices", []):
+            for sec in appendix.get("sections", []):
+                for sub in sec.get("subsections", []):
+                    clauses.extend(sub.get("clauses", []))
+                clauses.extend(sec.get("clauses", []))
     return clauses
 
 
@@ -70,8 +83,20 @@ def main():
 
     flags       = load_flags()
     clause_list = build_clause_list(doc)
-    chapters    = doc.get("chapters", [])
+    divisions   = doc.get("divisions", [])
     stats       = doc.get("_stats", {})
+
+    # Aggregate counts
+    total_parts    = sum(len(dv.get("parts", [])) for dv in divisions)
+    total_sections = sum(
+        len(p.get("sections", []))
+        for dv in divisions for p in dv.get("parts", [])
+    )
+    total_subsecs  = sum(
+        len(s.get("subsections", []))
+        for dv in divisions for p in dv.get("parts", [])
+        for s in p.get("sections", [])
+    )
 
     st.title("📊 Extraction Statistics")
     st.caption(f"Source: **{doc.get('title', 'Building Code')}** — `{doc.get('source_pdf', '')}`")
@@ -79,17 +104,27 @@ def main():
 
     # ── Top-level counts ──────────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pages",    doc.get("total_pages", "?"))
-    real_parts = sum(1 for ch in chapters if ch.get("number", "").isdigit())
-    c2.metric("Parts",    real_parts)
-    c3.metric("Sections", sum(len(ch.get("sections", [])) for ch in chapters))
-    c4.metric("Clauses",  len(clause_list))
+    c1.metric("Pages",       doc.get("total_pages", "?"))
+    c2.metric("Parts",       total_parts)
+    c3.metric("Sections",    total_sections)
+    c4.metric("Subsections", total_subsecs)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Equations", sum(len(cl.get("equations", [])) for cl in clause_list))
-    c2.metric("Figures",   sum(len(cl.get("figures",   [])) for cl in clause_list))
-    c3.metric("Tables",    sum(len(cl.get("tables",    [])) for cl in clause_list))
-    c4.metric("🚩 Flagged", len(flags))
+    c1.metric("Clauses",   len(clause_list))
+    c2.metric("Equations", sum(len(cl.get("equations", [])) for cl in clause_list))
+    c3.metric("Figures",   sum(len(cl.get("figures",   [])) for cl in clause_list))
+    c4.metric("Tables",    sum(len(cl.get("tables",    [])) for cl in clause_list))
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🚩 Flagged", len(flags))
+    c2.metric("Divisions",  len(divisions))
+    cf_tables = sum(
+        len(s.get("tables", []))
+        for s in doc.get("conversion_factors", {}).get("sections", [])
+    )
+    c3.metric("CF Tables",  cf_tables)
+    pref_secs = len(doc.get("preface", {}).get("sections", []))
+    c4.metric("Preface Sections", pref_secs)
 
     st.divider()
 
@@ -117,10 +152,10 @@ def main():
 
         unresolved = [
             {
-                "Clause":  cl.get("number"),
+                "Clause":   cl.get("number"),
                 "Ref Text": r.get("text"),
-                "Kind":    r.get("kind"),
-                "Target":  r.get("target_id", "—"),
+                "Kind":     r.get("kind"),
+                "Target":   r.get("target_id", "—"),
             }
             for cl in clause_list
             for r in cl.get("references", [])
@@ -132,22 +167,50 @@ def main():
 
     st.divider()
 
-    # ── Per-Part breakdown ────────────────────────────────────────────────────
-    st.subheader("Per-Part Breakdown")
-    rows = []
-    for ch in chapters:
-        secs = ch.get("sections", [])
-        cls  = [cl for s in secs for cl in s.get("clauses", [])]
-        rows.append({
-            "Part":      f"{ch['number']} — {ch['title']}",
-            "Sections":  len(secs),
-            "Clauses":   len(cls),
-            "Equations": sum(len(cl.get("equations", [])) for cl in cls),
-            "Figures":   sum(len(cl.get("figures",   [])) for cl in cls),
-            "Tables":    sum(len(cl.get("tables",    [])) for cl in cls),
-            "Flagged":   sum(1 for cl in cls if cl["id"] in flags),
+    # ── Per-Division / Per-Part breakdown ─────────────────────────────────────
+    st.subheader("Per-Division Breakdown")
+    div_rows = []
+    for dv in divisions:
+        parts = dv.get("parts", [])
+        all_secs  = [s for p in parts for s in p.get("sections", [])]
+        all_subs  = [sub for s in all_secs for sub in s.get("subsections", [])]
+        all_cls   = [cl for sub in all_subs for cl in sub.get("clauses", [])] + \
+                    [cl for s in all_secs for cl in s.get("clauses", [])]
+        appendices = dv.get("appendices", [])
+        div_rows.append({
+            "Division":    f"{dv['id']} — {dv.get('title', '')}",
+            "Parts":       len(parts),
+            "Sections":    len(all_secs),
+            "Subsections": len(all_subs),
+            "Clauses":     len(all_cls),
+            "Equations":   sum(len(cl.get("equations", [])) for cl in all_cls),
+            "Figures":     sum(len(cl.get("figures",   [])) for cl in all_cls),
+            "Tables":      sum(len(cl.get("tables",    [])) for cl in all_cls),
+            "Appendices":  len(appendices),
+            "Flagged":     sum(1 for cl in all_cls if cl["id"] in flags),
         })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(div_rows), use_container_width=True, hide_index=True)
+
+    st.subheader("Per-Part Breakdown")
+    part_rows = []
+    for dv in divisions:
+        for part in dv.get("parts", []):
+            secs  = part.get("sections", [])
+            subs  = [sub for s in secs for sub in s.get("subsections", [])]
+            cls   = [cl for sub in subs for cl in sub.get("clauses", [])] + \
+                    [cl for s in secs for cl in s.get("clauses", [])]
+            part_rows.append({
+                "Division":    dv["id"],
+                "Part":        f"Part {part['number']} — {part.get('title', '')}",
+                "Sections":    len(secs),
+                "Subsections": len(subs),
+                "Clauses":     len(cls),
+                "Equations":   sum(len(cl.get("equations", [])) for cl in cls),
+                "Figures":     sum(len(cl.get("figures",   [])) for cl in cls),
+                "Tables":      sum(len(cl.get("tables",    [])) for cl in cls),
+                "Flagged":     sum(1 for cl in cls if cl["id"] in flags),
+            })
+    st.dataframe(pd.DataFrame(part_rows), use_container_width=True, hide_index=True)
 
     st.divider()
 

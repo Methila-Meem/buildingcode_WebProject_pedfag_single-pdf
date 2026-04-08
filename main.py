@@ -37,29 +37,40 @@ def run_pipeline(pdf_path: str, force_extract: bool = False, use_ai_enhancement:
     pdf_filename  = os.path.basename(pdf_path)
     document_dict = parse_datalab_output(datalab_result, source_pdf=pdf_filename)
 
-    chapters         = document_dict.get("chapters", [])
-    total_sections   = sum(len(ch.get("sections", [])) for ch in chapters)
-    total_clauses    = sum(
-        len(sec.get("clauses", []))
-        for ch in chapters
-        for sec in ch.get("sections", [])
+    # Collect stats from new schema (divisions -> parts -> sections -> subsections -> clauses)
+    divisions      = document_dict.get("divisions", [])
+    total_parts    = sum(len(d.get("parts", [])) for d in divisions)
+    total_sections = sum(
+        len(p.get("sections", []))
+        for d in divisions for p in d.get("parts", [])
     )
-    total_subclauses = sum(
-        len(cl.get("sub_clauses", []))
-        for ch in chapters
-        for sec in ch.get("sections", [])
-        for cl in sec.get("clauses", [])
+    total_subsecs  = sum(
+        len(s.get("subsections", []))
+        for d in divisions for p in d.get("parts", [])
+        for s in p.get("sections", [])
     )
-    total_tables = sum(
+    total_clauses  = sum(
+        len(sub.get("clauses", [])) + len(s.get("clauses", []))
+        for d in divisions for p in d.get("parts", [])
+        for s in p.get("sections", [])
+        for sub in s.get("subsections", [])
+    ) + sum(
+        len(s.get("clauses", []))
+        for d in divisions for p in d.get("parts", [])
+        for s in p.get("sections", [])
+    )
+    total_tables   = sum(
         len(cl.get("tables", []))
-        for ch in chapters
-        for sec in ch.get("sections", [])
-        for cl in sec.get("clauses", [])
+        for d in divisions for p in d.get("parts", [])
+        for s in p.get("sections", [])
+        for sub in s.get("subsections", [])
+        for cl in sub.get("clauses", [])
     )
-    print(f"  Chapters:    {len(chapters)}")
+    print(f"  Divisions:   {len(divisions)}")
+    print(f"  Parts:       {total_parts}")
     print(f"  Sections:    {total_sections}")
+    print(f"  Subsections: {total_subsecs}")
     print(f"  Clauses:     {total_clauses}")
-    print(f"  Sub-clauses: {total_subclauses}")
     print(f"  Tables:      {total_tables}")
 
     print("\n[Step 3/4] Linking internal references...")
@@ -81,10 +92,11 @@ def run_pipeline(pdf_path: str, force_extract: bool = False, use_ai_enhancement:
     print("=" * 60)
     print(f"  Document:    {document_dict.get('title', 'Unknown')}")
     print(f"  Pages:       {document_dict.get('total_pages', '?')}")
-    print(f"  Chapters:    {len(chapters)}")
+    print(f"  Divisions:   {len(divisions)}")
+    print(f"  Parts:       {total_parts}")
     print(f"  Sections:    {total_sections}")
+    print(f"  Subsections: {total_subsecs}")
     print(f"  Clauses:     {total_clauses}")
-    print(f"  Sub-clauses: {total_subclauses}")
     print(f"  Tables:      {total_tables}")
     print(f"  References:  {stats.get('total_references', 0)} found, "
           f"{stats.get('resolution_rate_pct', 0)}% resolved")

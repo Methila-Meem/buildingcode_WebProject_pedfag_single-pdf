@@ -1,0 +1,266 @@
+Refactor my existing parser so it generates the correct BCBC 2024 structure directly, then regenerate and replace the old structured_document.json.
+
+FILES TO USE
+1. Full PDF
+- bcbc_2024_web_version_revision2.pdf
+
+2. Existing broken structured output that must be replaced
+- @storage\output\structured_document.json
+
+3. Reference JSON showing desired nesting/style for part of the code @New_fixes 
+- Reference_structured_document.json
+
+4. Preface segmentation reference images @New_fixes
+- Preface 1.png
+- Preface 2.png
+
+5. Numbering system reference image @New_fixes
+- Reference_Part Numbering system.png
+
+6. Existing parser file currently used by the system @parser
+- structure_parser.py
+
+MAIN TASK
+Modify production code in:
+- structure_parser.py
+
+Do not rely on a one-off JSON restructuring script as the main solution.
+The parser itself must be fixed so future runs produce the correct schema.
+
+After updating the parser:
+1. regenerate the structured output
+2. replace the old structured_document.json
+3. validate the result
+
+FINAL REQUIRED SCHEMA
+Use this exact structure and top-level order:
+
+{
+  "title": "British Columbia Building Code 2024",
+  "source_pdf": "bcbc_2024_web_version_revision2.pdf",
+  "total_pages": ...,
+  "preface": {
+    "id": "PREFACE",
+    "title": "Preface",
+    "page_span": [...],
+    "sections": [
+      {
+        "id": "PREF-SEC-01",
+        "number": "",
+        "title": "Development of the National Model Codes",
+        "page_span": [...],
+        "content": [...],
+        "subsections": [
+          {
+            "id": "PREF-SUBSEC-01-01",
+            "number": "",
+            "title": "National Building Code of Canada 2020",
+            "page_span": [...],
+            "content": [...],
+            "tables": [...],
+            "figures": [...],
+            "references": [...]
+          }
+        ]
+      }
+    ]
+  },
+  "divisions": [
+    {
+      "id": "DIV-A",
+      "number": "A",
+      "title": "Compliance, Objectives and Functional Statements",
+      "page_span": [...],
+      "parts": [
+        {
+          "id": "PART-A-1",
+          "number": "1",
+          "title": "Compliance",
+          "page_span": [...],
+          "sections": [
+            {
+              "id": "SEC-1-1",
+              "number": "1.1",
+              "title": "General",
+              "page_span": [...],
+              "subsections": [
+                {
+                  "id": "SUBSEC-1-1-1",
+                  "number": "1.1.1",
+                  "title": "Application of this Code",
+                  "page_span": [...],
+                  "clauses": [
+                    {
+                      "id": "CL-1-1-1-1",
+                      "number": "1.1.1.1",
+                      "title": "Application of this Code",
+                      "content": [...],
+                      "tables": [...],
+                      "figures": [...],
+                      "equations": [...],
+                      "references": [...],
+                      "page_span": [...],
+                      "note_refs": [...]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "appendices": []
+    }
+  ],
+  "conversion_factors": {
+    "id": "CONVERSION-FACTORS",
+    "title": "Conversion Factors",
+    "page_span": [...],
+    "sections": [...]
+  }
+}
+
+SCHEMA RULES
+- Preface -> sections -> subsections
+- Divisions -> parts -> sections -> subsections -> clauses
+- Conversion Factors -> sections
+- Appendices stay under divisions
+- No top-level chapters
+- No top-level front_matter
+
+NUMBERING RULES
+Use BCBC numbering exactly:
+- Part = 4
+- Section = 4.1
+- Subsection = 4.1.1
+- Clause/Article = 4.1.1.3
+
+So:
+- 4 -> part
+- 4.1 -> section
+- 4.1.1 -> subsection
+- 4.1.1.3 -> clause
+
+Sentence items like 1), 2) stay inside clause.content.
+Markers like (a), (b), (i), (ii) stay as structured content items inside clauses.
+
+WHAT TO FIX IN structure_parser.py
+The current parser still uses Chapter/Section/Clause and outputs top-level chapters. Refactor it so it natively outputs:
+- preface
+- divisions
+- conversion_factors
+
+Recommended model:
+- ContentItem
+- Table
+- Figure
+- Equation
+- Clause
+- Subsection
+- Section
+- Part
+- Appendix
+- Division
+- PrefaceSection
+- PrefaceSubsection
+- Preface
+- ConversionFactorsSection
+- ConversionFactors
+- Document
+
+PARSING REQUIREMENTS
+1. Preface
+- Build as a dedicated top-level object
+- Segment using Preface 1.png, Preface 2.png, and the PDF
+- Keep Preface separate from the divisions
+
+2. Divisions
+- Build Division A, Division B, Division C
+- Inside each division build parts
+- Then sections, subsections, clauses
+
+3. Conversion Factors
+- Build as its own top-level object
+- Must contain sections
+- Do not place it under preface or divisions
+
+4. Appendices
+- Keep under the correct division
+- Do not make appendices top-level
+
+DATA PRESERVATION
+Preserve as much as possible from the current parser:
+- ordered content
+- tables
+- figures
+- equations
+- references
+- note_refs
+- page_span
+- captions
+- alt text
+- image paths
+
+REFERENCE PRIORITY
+Use these as source of truth:
+1. PDF
+2. Preface 1.png and Preface 2.png
+3. Reference_Part Numbering system.png
+4. Reference_structured_document.json for style and field patterns
+5. structure_parser.py as the production parser to update
+
+IMPLEMENTATION NOTES
+- Update dataclasses
+- Update heading interpretation
+- Track:
+  current_division
+  current_part
+  current_section
+  current_subsection
+  current_clause
+  current_preface_section
+  current_preface_subsection
+  current_conversion_section
+- Attach code content to clauses
+- Attach preface content to preface section/subsection content
+- Attach conversion factor content to conversion_factors sections
+- Do not invent headings not supported by the PDF or reference images
+
+ID STYLE
+Use stable IDs like:
+- DIV-A
+- PART-A-1
+- SEC-4-1
+- SUBSEC-4-1-1
+- CL-4-1-1-3
+- PREFACE
+- PREF-SEC-01
+- PREF-SUBSEC-01-01
+- CONVERSION-FACTORS
+- CF-SEC-01
+- APP-B-C
+
+VALIDATION CHECKS
+After regeneration verify:
+- no top-level chapters
+- preface exists
+- divisions exists
+- conversion_factors exists
+- preface uses sections -> subsections
+- divisions use parts -> sections -> subsections -> clauses
+- conversion_factors uses sections
+- appendices remain under divisions
+- numbering is mapped correctly
+- JSON is valid
+- top-level key order is:
+  title, source_pdf, total_pages, preface, divisions, conversion_factors
+
+DELIVERABLES
+Produce:
+1. updated structure_parser.py
+2. updated structured_document.json
+
+At the end, briefly report:
+- what changed in the parser
+- whether structured_document.json was replaced successfully
+- any ambiguous areas needing manual review
