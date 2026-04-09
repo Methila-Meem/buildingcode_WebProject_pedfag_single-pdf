@@ -21,13 +21,13 @@ PDF  →  Datalab Marker API  →  Structure Parser  →  Reference Linker  → 
 ## Features
 
 - **PDF extraction** via [Datalab Marker API](https://www.datalab.to) with local result caching
-- **Hierarchical parsing** — Chapter → Section → Clause → Sub-clause → Table / Figure / Equation
-- **Cross-reference resolution** — `Sentence 4.1.6.5.(1)`, `Table 4.1.3.2.-A`, `Figure 4.1.6.5.-A` resolved to clickable links
-- **Appendix note resolution** — `(See Note A-4.1.6.16.(6).)` resolved and rendered as a navigable button
+- **Hierarchical parsing** — Division → Part → Section → Subsection → Clause → Sub-clause → Table / Figure / Equation
+- **Notes section extraction** — "Notes to Part N" segments parsed into dedicated `SEC-NOTES-*` sections inside each Part, holding `CL-NOTE-*` note clauses at the same level as regular code sections
+- **Cross-reference resolution** — `Sentence 4.1.6.5.(1)`, `Table 4.1.3.2.-A`, `Figure 4.1.6.5.-A` resolved to clickable links (84.7% resolution rate)
+- **Appendix note resolution** — `(See Note A-4.1.6.16.(6).)` resolved to `CL-NOTE-*` clause IDs and rendered as navigable buttons (99.8% resolution rate)
 - **Inline KaTeX math** — equations rendered in-browser
 - **Multi-row table headers** — colspan / rowspan parsed correctly; cross-page table fragments merged
 - **Full-text search** across all clause titles and content
-- **QA flagging** — reviewers can flag parsing issues clause by clause and export to JSON
 - **REST API** — headless programmatic access to the structured document
 - **Optional AI enhancement** — Claude adds semantic column labels to tables
 
@@ -165,14 +165,16 @@ python main.py building_code.pdf --ai
 
 ---
 
-## Viewer Modes
+## Streamlit Viewer
 
-| Mode | Icon | Description |
-|---|---|---|
-| Browse | 📑 | Navigate by Chapter → Section → Clause |
-| Search | 🔍 | Full-text search across all clause content |
-| Flagged Issues | 🚩 | Review and export QA flags |
-| Stats & Raw | 📊 | Reference resolution stats and raw JSON download |
+The viewer (`viewer_streamlit.py`) is a single-page **Extraction Statistics** dashboard:
+
+| Section | Description |
+|---|---|
+| Top-level counts | Pages, Parts, Sections, Clauses, Equations, Figures, Tables |
+| Reference Resolution | Found / Resolved / Rate for cross-references and appendix note refs |
+| Per-Part Breakdown | Sections, Clauses, Equations, Figures, Tables per Part |
+| Downloads | `structured_document.json` and raw Datalab JSON download buttons |
 
 ---
 
@@ -185,8 +187,9 @@ The parser targets structured legislative/regulatory documents with:
 - Multi-level HTML tables with colspan/rowspan headers
 - Inline and display LaTeX equations
 - Appendix notes (`See Note A-4.1.6.16.(6).`)
+- "Notes to Part N" segments (extracted into dedicated section-level notes blocks)
 
-The **British Columbia Building Code (BCBC) Part 4** was used as the primary development and validation document.
+The **full British Columbia Building Code 2024 (BCBC 2024, 1906 pages, Divisions A/B/C)** is the primary development and validation document.
 
 ---
 

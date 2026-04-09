@@ -84,15 +84,15 @@ Document
 **`_stats` on Document (added by `reference_linker.py`):**
 ```python
 {
-    "total_references": 2965,
-    "resolved_references": 2344,
-    "resolution_rate_pct": 79.1,
-    "total_note_refs": 919,
-    "resolved_note_refs": 887,
-    "note_resolution_rate_pct": 96.5,
+    "total_references": 2945,
+    "resolved_references": 2495,
+    "resolution_rate_pct": 84.7,
+    "total_note_refs": 922,
+    "resolved_note_refs": 920,
+    "note_resolution_rate_pct": 99.8,
 }
 ```
-Unresolved references (~20.9%) are expected — they point to other PDFs in the BCBC series (external volumes).
+Unresolved references (~15.3%) are expected — they point to other PDFs in the BCBC series (external volumes). Unresolved note refs (0.2%) are genuine external appendix notes not in this PDF.
 
 ---
 
@@ -140,10 +140,13 @@ Unresolved references (~20.9%) are expected — they point to other PDFs in the 
 
 **Attributes:**
 - `source_pdf`, `figures_dir` — set in `__init__`
-- `_chapter_counter`, `_auto_clause_counter`, `_table_counter`, `_equation_counter`, `_figure_counter` — global counters
+- `_auto_clause_counter`, `_table_counter`, `_equation_counter`, `_figure_counter` — global counters
 - `_images_dict` — populated from `datalab_result["images"]` before flattening
 - `_page_objects` — raw page list from Datalab JSON; used by `_resolve_hier_target()` to look up block content by `/page/{idx}/{type}/{child}` path
 - `_clause_index` — `{clause_id → Clause}` dict; populated by `_make_clause()`; used by `_resolve_hier_target()` for fast lookup
+- `_subsec_index` — `{subsec_id → Subsection}` dict; populated by `_make_subsection()`
+- `_section_index` — `{sec_id → Section}` dict; populated by `_make_section()`
+- `_notes_section_index` — `{"SEC-NOTES-{part_id}" → Section}` dict; populated when a "Notes to Part N" heading is detected; used to prevent duplicate notes sections
 
 **Key Methods:**
 | Method | Purpose |
@@ -158,6 +161,8 @@ Unresolved references (~20.9%) are expected — they point to other PDFs in the 
 | `_make_section(number, title, page, chapter)` | Creates Section and appends to chapter; deduplicates by `SEC-ID`; longer title wins on collision. Non-numeric section names get chapter-prefixed IDs (e.g. `SEC-CH-FRONT-0-Preface`) to prevent cross-chapter collisions |
 | `_make_clause(number, title, page, section)` | Creates Clause, appends to section, registers in `_clause_index` |
 | `_clause_id_for(number)` | Returns `CL-{number}` for numbered clauses; `CL-AUTO-{n}` for unnumbered |
+| `_note_clause_id_for(note_number)` | Returns `CL-NOTE-{safe}` for note clauses; replaces `.`, `(`, `)` with `-`. Empty number → `CL-NOTE-AUTO-{n}` |
+| `_make_note_clause(note_number, title, page, notes_section)` | Creates (or returns existing) Clause under a NotesSection; registers in `_clause_index` |
 | `_resolve_hier_target(section_hierarchy, chapters, current_section)` | Resolves Datalab `section_hierarchy` dict to the containing Clause; walks `/page/{idx}/{type}/{child}` paths via `_page_objects` |
 | `_remove_empty_clauses(chapters)` | Drops clauses with no content, figures, tables, or equations |
 | `_merge_continued_tables(chapters)` | Merges cross-page `(continued)` table fragments; applies cross-page rowspan carry |
@@ -185,6 +190,26 @@ In `_build_hierarchy`: skips figure blocks where alt text is **< 60 characters**
 4. Fallback: extract figure number from alt text via `RE_FIGURE_NUM`
 
 **`_build_hierarchy()` heading rules:**
+
+**Priority 5 — Notes to Part N** (checked after Division/Preface/CF/Appendix priorities, before mode-specific handling):
+- Matched by `RE_NOTES_PART` when `has_hr=True` and `mode in ("normal", "init")` and `current_division` is set
+- Finds or creates a `Section` with `id="SEC-NOTES-{target_part.id}"`, `number=""`, appended to `target_part.sections[]`
+- Sets `current_notes_section`, `current_note_clause = None`, `current_section = current_notes_section`
+- All subsequent headings and text blocks route to notes-mode handlers until a new Part/Division/Appendix heading resets state
+
+**Notes-mode heading handler** (when `current_notes_section is not None` and no Part match):
+- Heading matches `RE_NOTE_CLAUSE` (starts with `A-...`) → creates a new note Clause via `_make_note_clause()`; sets `current_note_clause` and `current_clause`
+- Heading does not match `RE_NOTE_CLAUSE` → appended as `**bold text**` ContentItem to `current_note_clause`
+
+**Notes-mode text handler** (when `current_notes_section is not None`):
+- First line matches `RE_NOTE_CLAUSE` → creates new note Clause; remainder of the text block attached as content
+- First line does not match → continuation text appended to `current_note_clause`
+
+**State reset for notes mode** — `current_notes_section` and `current_note_clause` are set to `None` when:
+- A new Division heading is encountered
+- A new Part heading (`m_part`) is encountered
+- An Appendix heading is encountered
+
 - h0 → untagged SectionHeader (1275 in full BCBC 2024):
   - `RE_PART` match → new Chapter with duplicate guard (longer title wins)
   - `RE_SENTENCE` (4-part) match + current_section → new Clause
@@ -257,6 +282,8 @@ RE_ARTICLE   = r'^(\d+\.\d+\.\d+)\.?\s*(.*)'
 RE_SENTENCE  = r'^(\d+\.\d+\.\d+\.\d+)\.?\s*(.*)'        # checked before RE_ARTICLE
 RE_SUBCLAUSE = r'^\s*(\([a-z]+\)|[a-z]\)|[ivxlcdm]+\.)\s+(.+)'  # re.IGNORECASE
 RE_FIGURE_NUM = r'Figure\s+([\d\.]+[\w\.\-]*)'  # caption fallback from alt text
+RE_NOTES_PART = r'^Notes\s+to\s+Part\s*(\d+)\s*(.*)'     # re.IGNORECASE — Priority 5 heading
+RE_NOTE_CLAUSE = r'^(A-(?:Table\s+)?[\d]+(?:\.[\d]+)*\.?(?:\(\d+\))?\.?)\s+(.*)'  # re.DOTALL|re.IGNORECASE — note clause number
 ```
 
 ### Public Entry Point
@@ -279,10 +306,14 @@ Creates a `StructureParser`, calls `parse()`, then `to_dict()` → returns JSON-
 
 **Appendix note references** → `clause.note_refs[]` — pattern: `See Note A-<identifier>`:
 - `target_ids` is a **list** (can resolve to multiple clauses)
-- **Two-pass note index:** indexes both CL-AUTO clause titles AND embedded text items starting with `A-`
+- **Note index now covers three clause types:**
+  - `CL-NOTE-*` clauses — indexed by their `number` field (e.g. `A-4.1.3.2.(2)` → `CL-NOTE-A-4-1-3-2--2-`)
+  - `CL-AUTO-*` clauses — indexed by clause title if it starts with `A-` (legacy path)
+  - Embedded text items — first line starting with `A-` inside any CL-AUTO clause
 - Fallback: strip sentence sub-number and retry (e.g. `A-4.1.3.2.(2)` → `A-4.1.3.2`)
 - `resolved: false` for external appendix notes (different PDF)
 - **`RE_NOTE` and `RE_A_TITLE` patterns** use `\d+(?:\.\d+)*` (not `[\d\.]+`) so that sub-note identifiers like `A-4.1.6.16.(6)` are captured correctly.
+- Note resolution rate improved to **99.8%** (920/922) after adding `CL-NOTE-*` indexing.
 
 **Key functions:**
 | Function | Purpose |
@@ -375,19 +406,27 @@ Single-page **Extraction Statistics** view. No sidebar mode selector. Sidebar is
 ## ID Naming Conventions
 | Node | Pattern | Example |
 |---|---|---|
-| Chapter (numeric Part) | `CH-{n}` | `CH-4` |
-| Chapter (front matter / non-Part h1) | `CH-FRONT-{n}` | `CH-FRONT-1` (Preface) |
-| Section (numeric number) | `SEC-{n}-{m}[-{k}...]` | `SEC-4-1` or `SEC-4-1-6` |
-| Section (non-numeric name) | `SEC-{chapter_id}-{safe_name}` | `SEC-CH-FRONT-0-Preface` |
-| Clause | `CL-{n}-{m}-{k}[-{j}...]` | `CL-4-1-6-5` |
-| Auto-clause (no number) | `CL-AUTO-{n}` | `CL-AUTO-1` |
+| Division | `DIV-{letter}` | `DIV-B` |
+| Part | `PART-{div}-{n}` | `PART-B-4` |
+| Section (numeric) | `SEC-{n}-{m}[-{k}...]` | `SEC-4-1` or `SEC-4-1-6` |
+| Section (non-numeric) | `SEC-{parent_id}-{safe_name}` | `SEC-PART-A-1-Preface` |
+| Notes Section | `SEC-NOTES-{part_id}` | `SEC-NOTES-PART-B-4` |
+| Subsection | `SUBSEC-{n}-{m}-{k}` | `SUBSEC-4-1-6` |
+| Clause (numbered) | `CL-{n}-{m}-{k}[-{j}...]` | `CL-4-1-6-5` |
+| Clause (unnumbered) | `CL-AUTO-{n}` | `CL-AUTO-1` |
+| Note Clause | `CL-NOTE-{A-safe}` | `CL-NOTE-A-4-1-1-3--1-` |
 | Table | `TBL-{n}` | `TBL-4` |
 | Equation | `EQ-{n}` | `EQ-2` |
 | Figure | `FIG-{n}` | `FIG-3` |
+| Appendix | `APP-{div}-{letter}` | `APP-B-C` |
+| Preface Section | `PREF-SEC-{nn}` | `PREF-SEC-01` |
+| Conversion Factors Section | `CF-SEC-{nn}` | `CF-SEC-01` |
 
-Periods in numbers are replaced with hyphens in IDs: `4.1.6.5` → `CL-4-1-6-5`.
+Periods in clause numbers are replaced with hyphens: `4.1.6.5` → `CL-4-1-6-5`.
 
-**Multi-division BCBC structure:** BCBC 2024 has Division A/B/C, each containing their own Parts (Part 1, 2, 3, etc.). The duplicate guard prevents ID collisions — the second occurrence of `CH-1` (e.g. Division B Part 1) reuses the existing `CH-1` chapter object rather than creating a duplicate, updating its title if the new title is longer.
+For note clause IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` → `CL-NOTE-A-4-1-1-3--1-` (double hyphen from `.(` sequence is preserved).
+
+**Notes Section uniqueness:** Because multiple Divisions each have a Part 1 (e.g. PART-A-1 and PART-B-1), the notes section id is anchored to the full part id (`SEC-NOTES-PART-A-1` vs `SEC-NOTES-PART-B-1`) to prevent collisions in `_section_index`.
 
 ---
 
@@ -415,12 +454,16 @@ Periods in numbers are replaced with hyphens in IDs: `4.1.6.5` → `CL-4-1-6-5`.
 - **Orphaned figure handling**: tries `_resolve_hier_target()` first; falls back to creating a minimal holder clause
 - **Storage is file-based** — `document_store.py` noted as swap candidate for PostgreSQL/SQLite
 - **Reference normalization**: dots/hyphens stripped for fuzzy caption matching (handles PDF typos)
-- **Note index two-pass**: indexes appendix clause titles AND embedded text items starting with `A-`
+- **Note index three-source**: `build_note_index()` now indexes (1) `CL-NOTE-*` clause numbers (primary — all A-numbered note clauses have dedicated IDs), (2) `CL-AUTO-*` clause titles that start with `A-` (legacy path), and (3) embedded text items in CL-AUTO clauses whose first line starts with `A-`
 - **Note ref regex**: `RE_NOTE` and `RE_A_TITLE` use `\d+(?:\.\d+)*` (not `[\d\.]+`) so sub-note identifiers such as `A-4.1.6.16.(6)` are captured fully
 - **Title-number index**: `build_title_number_index()` maps derived `CL-X-X-X-X` → actual `CL-AUTO-N` for clauses whose number appears only in their title; used as fallback in `_ref_to_id()` to resolve references that previously failed because the clause had a CL-AUTO id
+- **Notes sections**: "Notes to Part N" headings (with `<hr/>`) become `SEC-NOTES-{part_id}` Sections inside `part.sections[]` at the same level as regular code sections; no subsection nesting; clauses hold `CL-NOTE-*` IDs
+- **Notes state tracking**: `_build_hierarchy()` tracks `current_notes_section` and `current_note_clause`; state is reset on Division/Part/Appendix heading transitions; all non-Part headings and text blocks while in notes mode route to the notes handlers
+- **Note clause ID formula**: `_note_clause_id_for()` replaces `.`, `(`, `)` with `-` in the A-number; e.g. `A-4.1.1.3.(1)` → `CL-NOTE-A-4-1-1-3--1-`
+- **`_notes_section_index`**: dict `{sec_id → Section}` prevents duplicate notes sections when "Notes to Part N" heading is seen more than once
 - **SEC→CL fallback**: `_ref_to_id()` for Subsection/Section kind tries `SEC-` first; if not in id_index, tries `CL-` — handles cases where a 3-part numbered heading was parsed as a Clause rather than a Section
 - **Deduplication**: reference linker tracks `(kind, ref)` tuples per clause; note linker tracks `note_ref` per clause
-- **`note_refs[]` is dynamic**: not part of the `Clause` dataclass — added to the dict by `reference_linker.link_references()`
+- **`note_refs[]` is dynamic**: not part of the `Clause` dataclass — added to the dict by `reference_linker.link_references()`; `target_ids` now resolve to `CL-NOTE-*` IDs (previously resolved to `CL-AUTO-*`)
 - **Real Parts metric**: `sum(1 for ch in chapters if ch.get("number","").isdigit())` — excludes FRONT-N chapters from the "Parts" count in Stats
 - **Unused AI functions**: `classify_block()`, `should_join_fragments()`, and `resolve_ambiguous_reference()` in `ai_enhancer.py` are defined but not called anywhere in the current pipeline — available for future use
 
@@ -430,16 +473,23 @@ Periods in numbers are replaced with hyphens in IDs: `4.1.6.5` → `CL-4-1-6-5`.
 | Metric | Value |
 |---|---|
 | Pages | 1906 |
-| Total chapters | 35 (10 real Parts + 25 FRONT-N front-matter) |
-| Sections | 454 |
-| Clauses | 2948 |
-| Tables | 472 |
-| Figures | 215 |
+| Divisions | 3 (A, B, C) |
+| Parts | 15 |
+| Regular Sections | 102 |
+| Notes Sections | 12 (one per Part that has a "Notes to Part N" segment) |
+| Subsections | 445 |
+| Regular Clauses | 2,419 |
+| Note Clauses | 699 |
+| Tables | 469 |
+| Figures | 212 |
 | Equations | 110 |
-| Reference resolution | 79.1% (2344/2965) |
-| Note resolution | 96.5% (887/919) |
+| Reference resolution | 84.7% (2,495/2,945) |
+| Note resolution | 99.8% (920/922) |
 
-Unresolved references (20.9%) and unresolved note refs (3.5%) are expected — they point to other volumes in the BCBC series not included in this PDF.
+Unresolved cross-references (~15.3%) point to other volumes in the BCBC series not in this PDF. Only 2 note refs are unresolved (genuine external appendix notes).
+
+**Parts with Notes Sections:**
+PART-A-1 (9), PART-A-2 (2), PART-A-3 (1), PART-B-1 (4), PART-B-3 (200), PART-B-4 (114), PART-B-5 (51), PART-B-6 (23), PART-B-8 (1), PART-B-9 (281), PART-B-10 (6), PART-C-2 (7) — numbers in parentheses are note clause counts.
 
 ---
 
@@ -474,4 +524,4 @@ streamlit run viewer_streamlit.py
 - Wire up unused AI pipeline functions (`classify_block`, `should_join_fragments`, `resolve_ambiguous_reference`) or remove them
 - Remove unused `pdfplumber` and `pymupdf` dependencies from `requirements.txt`
 - Improve `_resolve_hier_target()` to handle deeper nesting and edge cases where the hierarchy path points to a non-heading block type
-- Further increase reference resolution beyond 79.1% — remaining ~620 unresolved refs are likely genuine external-volume references, but some may be addressable with improved 3-part heading detection
+- Further increase reference resolution beyond 84.7% — remaining ~450 unresolved refs are likely genuine external-volume references, but some may be addressable with improved 3-part heading detection
