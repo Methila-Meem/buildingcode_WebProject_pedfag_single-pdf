@@ -1,146 +1,246 @@
-Modify my production parser/workflow so the regenerated structured_document.json includes the missing section-level Notes block for every extracted Part, matching the reference structure.
+Refactor my table schema and parser so table captions and table row/cell text automatically extract structured reference links.
 
 FILES
 - @parser\structure_parser.py
 - @storage\output\structured_document.json
-- @New_fixes\Reference_structured_document.json
 - @bcbc_2024_web_version_revision2.pdf
-- @New_fixes\missing segment_section notes.png
+- bcbc_2024_web_version_revision2.pdf
 
 MAIN GOAL
-Fix the parser/output so each Part includes a section-level Notes segment like the reference file.
+Improve the "tables": [] schema so table captions and table row/cell text contain structured parsed references instead of only flat strings.
 
-IMPORTANT MISSING SEGMENT
-The updated structured_document.json is missing a section such as:
-- id: SEC-NOTES-PART4
-- title: Notes to Part 4 Structural Design
+CURRENT ISSUE
+Right now tables look like this:
+- caption is a single raw string
+- rows are arrays of plain strings
+- references inside caption and cells are not explicitly extracted
 
-This Notes section must exist at the SAME LEVEL as normal sections inside the Part.
-It must not be placed under preface, appendices, or clause content.
-It must be included for all Parts in the full PDF wherever Part Notes exist.
+Examples from current data:
+- caption:
+  "Table 1.1.1.1.(5) Alternate Compliance Methods for Heritage Buildings Forming Part of Sentence 1.1.1.1.(5)"
+- row cell references:
+  "Sentence 3.1.3.1.(1), Table 3.1.3.1., Subsection 9.10.9."
+  "Subsection 3.1.5., Article 9.10.6.1."
 
-TARGET BEHAVIOR
-For each Part:
-- keep normal sections/subsections/clauses
-- additionally include one Notes section at section level when that Part has notes
-- example:
-  Part 4
-    - Section 4.1
-    - Section 4.2
-    - ...
-    - SEC-NOTES-PART4  ← same level as sections
+These must be parsed into structured linkable metadata. :contentReference[oaicite:0]{index=0}
 
-NOTES SECTION RULES
-- The Notes block must be a section-level object inside the relevant Part.
-- Use a consistent id pattern:
-  - SEC-NOTES-PART1
-  - SEC-NOTES-PART2
-  - SEC-NOTES-PART4
-  etc.
-- number should be empty string
-- title should be:
-  - Notes to Part X <Part Title>
-  Example: Notes to Part 4 Structural Design
-- page_span must be preserved
-- its content should be stored as clauses inside that notes section
-- each note clause should preserve:
-  - id
-  - number like A-4.1.1.3.(1)
-  - title
-  - content
-  - tables
-  - figures
-  - equations
-  - references
-  - page_span
-  - note_refs
-
-SCHEMA TO KEEP
-Do NOT change the frontend schema. Keep this exact top-level shape:
+REQUIRED TABLE SCHEMA
+Change each table object to a richer structure like this:
 
 {
-  "title": "...",
-  "source_pdf": "...",
-  "total_pages": ...,
-  "preface": {...},
-  "divisions": [
+  "id": "TBL-2",
+  "caption": {
+    "raw": "Table 1.1.1.1.(5) Alternate Compliance Methods for Heritage Buildings Forming Part of Sentence 1.1.1.1.(5)",
+    "table_number": "1.1.1.1.(5)",
+    "table_label": "Table 1.1.1.1.(5)",
+    "title": "Alternate Compliance Methods for Heritage Buildings",
+    "forming_part_of": {
+      "kind": "Sentence",
+      "raw": "Sentence 1.1.1.1.(5)",
+      "number": "1.1.1.1.(5)",
+      "target_id": "SENT-1-1-1-1-5",
+      "resolved": true
+    }
+  },
+  "headers": [
+    { "index": 0, "text": "No." },
+    { "index": 1, "text": "Code Requirement in Division B" },
+    { "index": 2, "text": "Alternate Compliance Method" }
+  ],
+  "rows": [
     {
-      "id": "DIV-A",
-      "number": "A",
-      "title": "...",
-      "page_span": [...],
-      "parts": [
+      "row_id": "TBL-2-R1",
+      "cells": [
         {
-          "id": "PART-A-1",
-          "number": "1",
-          "title": "...",
-          "page_span": [...],
-          "sections": [...],
-          "appendices": []
+          "col_index": 0,
+          "header": "No.",
+          "raw": "1",
+          "value": "1",
+          "references": []
+        },
+        {
+          "col_index": 1,
+          "header": "Code Requirement in Division B",
+          "raw": "Sentence 3.1.3.1.(1), Table 3.1.3.1., Subsection 9.10.9. ...",
+          "value": "Sentence 3.1.3.1.(1), Table 3.1.3.1., Subsection 9.10.9. ...",
+          "references": [
+            {
+              "text": "Sentence 3.1.3.1.(1)",
+              "kind": "Sentence",
+              "number": "3.1.3.1.(1)",
+              "target_id": "SENT-3-1-3-1-1",
+              "resolved": true
+            },
+            {
+              "text": "Table 3.1.3.1.",
+              "kind": "Table",
+              "number": "3.1.3.1",
+              "target_id": "TBL-3-1-3-1",
+              "resolved": true
+            },
+            {
+              "text": "Subsection 9.10.9.",
+              "kind": "Subsection",
+              "number": "9.10.9",
+              "target_id": "SUBSEC-9-10-9",
+              "resolved": true
+            }
+          ]
+        },
+        {
+          "col_index": 2,
+          "header": "Alternate Compliance Method",
+          "raw": "Except for F1 occupancies...",
+          "value": "Except for F1 occupancies...",
+          "references": []
         }
-      ]
+      ],
+      "page_span": [32]
     }
   ],
-  "conversion_factors": {...}
+  "references": [
+    {
+      "text": "Sentence 1.1.1.1.(5)",
+      "kind": "Sentence",
+      "number": "1.1.1.1.(5)",
+      "target_id": "SENT-1-1-1-1-5",
+      "resolved": true,
+      "source": "caption"
+    }
+  ],
+  "page_span": [32]
 }
 
-KEEP THESE HIERARCHIES
-- Preface -> sections -> subsections
-- Divisions -> parts -> sections -> subsections -> clauses
-- Conversion Factors -> sections
+REQUIRED BEHAVIOR
 
-SPECIAL RULE FOR PART NOTES
-Part Notes are a special section-level structure:
-- they belong inside part.sections
-- they may contain clauses directly
-- they do NOT need subsection nesting
-- this is acceptable even though normal numbered code sections use subsections
+1. CAPTION PARSING
+Parse caption into:
+- raw
+- table_number
+- table_label
+- title
+- forming_part_of
 
-REFERENCE REQUIREMENT
-Use Reference_structured_document.json as the structural example for how the section-level notes block should look.
-Use the updated structured_document.json to identify what is currently missing.
-Use the image missing segment_section notes.png to verify the missing Notes-to-Part section.
-Use the full PDF as source of truth for where notes exist.
+Example:
+"Table 1.1.1.1.(5) Alternate Compliance Methods for Heritage Buildings Forming Part of Sentence 1.1.1.1.(5)"
 
-WHAT TO FIX
-1. Update structure_parser.py so it can detect/build section-level Part Notes blocks.
-2. Ensure Notes to Part X is added into the correct Part's sections list.
-3. Regenerate structured_document.json.
-4. Replace the old structured_document.json with the fixed one.
+should become:
+- table_number = 1.1.1.1.(5)
+- table_label = Table 1.1.1.1.(5)
+- title = Alternate Compliance Methods for Heritage Buildings
+- forming_part_of.kind = Sentence
+- forming_part_of.number = 1.1.1.1.(5)
 
-IMPLEMENTATION HINT
-The current logic likely captures note clauses like:
-- A-4.1.1.3.(1)
-but does not group them into a dedicated section-level Part Notes container.
+2. HEADER STRUCTURE
+Instead of only string headers, use structured headers:
+- index
+- text
 
-Add logic so that:
-- when note content for a Part is encountered
-- create or reuse a notes section for that Part
-- attach note clauses under that notes section
+3. ROW STRUCTURE
+Instead of rows being array-of-arrays only, convert each row into:
+- row_id
+- cells[]
 
-Suggested container:
+4. CELL STRUCTURE
+Each cell must include:
+- col_index
+- header
+- raw
+- value
+- references[]
+
+5. REFERENCE EXTRACTION
+Extract references from:
+- caption
+- each row cell
+
+Support these kinds:
+- Part
+- Section
+- Subsection
+- Article
+- Sentence
+- Clause
+- Subclause
+- Table
+- Figure
+- Appendix
+- Note
+
+Each extracted reference should use:
 {
-  "id": "SEC-NOTES-PART4",
-  "number": "",
-  "title": "Notes to Part 4 Structural Design",
-  "clauses": [...],
-  "page_span": [...]
+  "text": "...",
+  "kind": "...",
+  "number": "...",
+  "target_id": "...",
+  "resolved": true/false
 }
 
-If your current section model already uses:
-- sections -> subsections -> clauses
-then allow this Notes section to hold clauses directly, or add a dedicated exception for notes sections.
-Do not disturb the rest of the schema.
+6. TABLE-LEVEL REFERENCES
+Add deduplicated table.references[] containing all unique extracted references from:
+- caption
+- cells
+
+Optionally include:
+- source = "caption"
+- source = "cell"
+
+7. TARGET ID RESOLUTION
+Resolve extracted references against the actual structured document IDs where possible.
+
+Examples:
+- Sentence 3.1.3.1.(1) -> SENT-3-1-3-1-1
+- Subsection 9.10.9. -> SUBSEC-9-10-9
+- Article 9.10.6.1. -> ART-9-10-6-1
+- Table 3.1.3.1. -> matching table id if present
+
+If not found:
+- keep the parsed number
+- set resolved = false
+- target_id = ""
+
+8. KEEP EXISTING TABLE DATA
+Preserve:
+- existing id
+- page/page_span
+- row values
+- captions
+- headers
+- content meaning
+
+This is a schema enrichment, not a destructive rewrite.
+
+PARSER TASKS
+Update structure_parser.py to:
+1. refactor table schema
+2. add caption parser
+3. add cell reference extractor
+4. add reference resolver
+5. regenerate structured_document.json
+6. replace old structured_document.json
+
+REFERENCE PATTERNS TO DETECT
+At minimum detect:
+- Section 3.4.
+- Subsection 3.1.5.
+- Article 9.10.6.1.
+- Sentence 3.1.3.1.(1)
+- Clause 9.10.19.5.(2)(a)
+- Subclause 3.5.2.1.(2)(a)(i)
+- Table 3.1.3.1.
+- Table 3.2.3.1.A
+- Appendix D
+- Note A-1.1.1.1.(5)
 
 VALIDATION
 After regeneration verify:
-- structured_document.json still follows the current frontend schema
-- SEC-NOTES-PART4 exists for Part 4
-- equivalent Notes sections exist for other Parts when notes are present in the PDF
-- Notes sections are inside the relevant Part.sections list
-- Notes sections are at the same level as regular sections
-- note clauses are not lost
-- no top-level schema changes were introduced
+- all tables still exist
+- captions are parsed into structured objects
+- rows are structured with row_id and cells
+- references are extracted from caption and cells
+- resolved links work where targets exist
+- unresolved references are preserved cleanly
+- structured_document.json remains valid JSON
 
 DELIVERABLES
 1. updated structure_parser.py
@@ -148,7 +248,8 @@ DELIVERABLES
 
 FINAL REPORT
 Briefly report:
-- how you added section-level Part Notes support
-- which Parts now contain SEC-NOTES-PARTX sections
+- how the table schema changed
+- how caption parsing works
+- how cell-level references are extracted
+- how many references were resolved vs unresolved
 - whether structured_document.json was replaced successfully
-- any ambiguous Parts that may still need manual review

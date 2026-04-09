@@ -12,32 +12,40 @@ Hierarchy:
     Preface  -> sections (PrefaceSection) -> subsections (PrefaceSubsection)
     Division -> parts   (Part)            -> sections   (Section)
              -> appendices (Appendix)        -> subsections (Subsection)
-                                              -> clauses    (Clause)
+                                              -> articles   (Article)
+                                                 -> sentences (Sentence)
+                                                    -> clauses (Clause)
+                                                       -> subclauses (Subclause)
     ConversionFactors -> sections (ConversionFactorsSection)
 
 BCBC Numbering System
 =====================
-    4          -> Part
-    4.1        -> Section
-    4.1.1      -> Subsection
-    4.1.1.3    -> Clause/Article
-    4.1.1.3.(2)-> Sentence (stays inside clause.content)
-    (a) / a)   -> sub_clause marker (inside clause.content)
+    4             -> Part
+    4.1           -> Section
+    4.1.1         -> Subsection
+    4.1.1.3       -> Article
+    4.1.1.3.(2)   -> Sentence (inside article.sentences)
+    (a) / a)      -> Clause marker (inside sentence.clauses)
+    (i)           -> Subclause marker (inside clause.subclauses)
 
 ID Conventions
 ==============
-    DIV-A          Division A
-    PART-A-1       Division A, Part 1
-    SEC-4-1        Section 4.1
-    SUBSEC-4-1-1   Subsection 4.1.1
-    CL-4-1-1-3     Clause 4.1.1.3
-    CL-AUTO-N      Unnumbered clause
-    PREFACE        Preface object
-    PREF-SEC-01    Preface Section 1
+    DIV-A              Division A
+    PART-A-1           Division A, Part 1
+    SEC-4-1            Section 4.1
+    SUBSEC-4-1-1       Subsection 4.1.1
+    ART-4-1-1-3        Article 4.1.1.3
+    ART-AUTO-N         Unnumbered article
+    ART-NOTE-A-4-1-1-3 Note article
+    SENT-4-1-1-3-1     Sentence 4.1.1.3.(1)
+    CLAUSE-4-1-1-3-1-a Clause 4.1.1.3.(1)(a)
+    SUBCLAUSE-...      Subclause
+    PREFACE            Preface object
+    PREF-SEC-01        Preface Section 1
     PREF-SUBSEC-01-02  Preface Section 1, Subsection 2
-    CONVERSION-FACTORS  Conversion Factors object
-    CF-SEC-01      Conversion Factors Section 1
-    APP-B-C        Division B, Appendix C
+    CONVERSION-FACTORS Conversion Factors object
+    CF-SEC-01          Conversion Factors Section 1
+    APP-B-C            Division B, Appendix C
 """
 
 import re
@@ -77,6 +85,7 @@ class Table:
     headers: List[str]
     rows: List[List[str]]
     page: int = 0
+    page_span: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -97,11 +106,54 @@ class Equation:
 
 
 @dataclass
+class Subclause:
+    """Maps to subclause markers: 4.1.1.3.(1)(a)(i)"""
+    id: str
+    number: str
+    marker: str
+    content: str = ""
+    page_span: List[int] = field(default_factory=list)
+    references: List[dict] = field(default_factory=list)
+
+
+@dataclass
 class Clause:
+    """Maps to clause markers: 4.1.1.3.(1)(a)"""
+    id: str
+    number: str
+    marker: str
+    content: str = ""
+    subclauses: List[Subclause] = field(default_factory=list)
+    tables: List[Table] = field(default_factory=list)
+    figures: List[Figure] = field(default_factory=list)
+    equations: List[Equation] = field(default_factory=list)
+    references: List[dict] = field(default_factory=list)
+    page_span: List[int] = field(default_factory=list)
+
+
+@dataclass
+class Sentence:
+    """Maps to sentence markers: 4.1.1.3.(1)"""
+    id: str
+    number: str
+    marker: str
+    content: str = ""
+    clauses: List[Clause] = field(default_factory=list)
+    tables: List[Table] = field(default_factory=list)
+    figures: List[Figure] = field(default_factory=list)
+    equations: List[Equation] = field(default_factory=list)
+    references: List[dict] = field(default_factory=list)
+    page_span: List[int] = field(default_factory=list)
+
+
+@dataclass
+class Article:
+    """Maps to 4-part numbers: 4.1.1.3 (formerly Clause)"""
     id: str
     number: str
     title: str
-    content: List[ContentItem] = field(default_factory=list)
+    sentences: List[Sentence] = field(default_factory=list)
+    content: List[ContentItem] = field(default_factory=list)  # notes/fallback only
     tables: List[Table] = field(default_factory=list)
     figures: List[Figure] = field(default_factory=list)
     equations: List[Equation] = field(default_factory=list)
@@ -116,7 +168,7 @@ class Subsection:
     id: str
     number: str
     title: str
-    clauses: List[Clause] = field(default_factory=list)
+    articles: List[Article] = field(default_factory=list)
     page_span: List[int] = field(default_factory=list)
 
 
@@ -127,7 +179,7 @@ class Section:
     number: str
     title: str
     subsections: List[Subsection] = field(default_factory=list)
-    clauses: List[Clause] = field(default_factory=list)   # fallback direct clauses
+    articles: List[Article] = field(default_factory=list)   # fallback direct articles
     page_span: List[int] = field(default_factory=list)
 
 
@@ -243,6 +295,12 @@ RE_SENTENCE = re.compile(r'^(\d+\.\d+\.\d+\.\d+)\.?\s*(.*)')        # check befo
 # Sub-clause markers: (a), a), i., etc.
 RE_SUBCLAUSE = re.compile(r'^\s*(\([a-z]+\)|[a-z]\)|[ivxlcdm]+\.)\s+(.+)', re.IGNORECASE)
 
+# Sentence markers: 1), 2), 3) at start of line
+RE_SENT_MARKER = re.compile(r'^\s*(\d+)\)\s+(.*)', re.DOTALL)
+
+# Legal clause/subclause markers: (a), (b), a), (i), (ii), etc.
+RE_LEGAL_MARKER = re.compile(r'^\s*(\([a-z]+\)|[a-z]\))\s+(.*)', re.DOTALL | re.IGNORECASE)
+
 # Figure caption number extraction
 RE_FIGURE_NUM = re.compile(r'Figure\s+([\d\.]+[\w\.\-]*)', re.IGNORECASE)
 
@@ -252,6 +310,13 @@ RE_NOTE_CLAUSE = re.compile(
     r'^(A-(?:Table\s+)?[\d]+(?:\.[\d]+)*\.?(?:\(\d+\))?\.?)\s+(.*)',
     re.DOTALL | re.IGNORECASE
 )
+
+# Roman numeral helper for _process_article_text
+_ROMAN_CHARS = frozenset('ivx')
+
+def _is_roman_numeral(s: str) -> bool:
+    """Return True if s consists only of i/v/x characters (common BCBC roman numerals)."""
+    return len(s) > 0 and all(c in _ROMAN_CHARS for c in s.lower())
 
 
 # =============================================================================
@@ -594,6 +659,208 @@ def save_image(image_key: str, base64_data: str, figures_dir: str) -> str:
 
 
 # =============================================================================
+# Table caption parsing and cell reference extraction
+# =============================================================================
+
+_RE_CAP_NUM = re.compile(
+    r'^[Tt]able\s+([\d]+(?:\.[\d]+)*(?:\.\([^)]+\))?(?:\.[A-Z])?)\s*(.*)',
+    re.DOTALL
+)
+_RE_CAP_FORMING = re.compile(
+    r'^(.*?)\s*[Ff]orming\s+[Pp]art\s+of\s+'
+    r'(?P<kind>Sentence|Article|Subsection|Section|Table|Figure|Part|Appendix)\s+'
+    r'(?P<ref>[\d]+(?:\.[\d]+)*(?:\.\([^)]+\))?\.?)',
+    re.IGNORECASE | re.DOTALL
+)
+_TABLE_REF_PATS = [
+    re.compile(r'\b(?P<kind>Sentence)\s+(?P<ref>\d+\.\d+\.\d+\.\d+\s*\.\s*\(\d+\)|\d+\.\d+\.\d+\.\d+\s*\(\d+\))', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Article)\s+(?P<ref>\d+\.\d+\.\d+\.\d+)\.?', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Subsection)\s+(?P<ref>\d+\.\d+\.\d+)\.?', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Section)\s+(?P<ref>\d+\.\d+)\.?', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Clause)\s+(?P<ref>\d+\.\d+\.\d+\.\d+)\.?', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Table)\s+(?P<ref>[\d\.]+[\w\.\-]*)', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Figure)\s+(?P<ref>[\d\.]+[\w\.\-]*)', re.IGNORECASE),
+    re.compile(r'\b(?P<kind>Appendix)\s+(?P<ref>[A-Z])\b', re.IGNORECASE),
+]
+
+
+def parse_table_caption(raw: str) -> dict:
+    """
+    Parse a raw table caption string into a structured metadata dict.
+
+    Example:
+        "Table 1.1.1.1.(5) Alternate Compliance Methods Forming Part of Sentence 1.1.1.1.(5)"
+        -> {
+            "raw": "Table ...",
+            "table_number": "1.1.1.1.(5)",
+            "table_label": "Table 1.1.1.1.(5)",
+            "title": "Alternate Compliance Methods",
+            "forming_part_of": {"kind": "Sentence", "raw": "Sentence 1.1.1.1.(5)",
+                                 "number": "1.1.1.1.(5)", "target_id": "", "resolved": False}
+        }
+    """
+    raw = (raw or "").strip()
+    result: dict = {
+        "raw":          raw,
+        "table_number": "",
+        "table_label":  "",
+        "title":        "",
+        "forming_part_of": None,
+    }
+    m = _RE_CAP_NUM.match(raw)
+    if not m:
+        result["title"] = raw
+        return result
+
+    table_number     = m.group(1).rstrip('.')
+    rest             = m.group(2).strip()
+    result["table_number"] = table_number
+    result["table_label"]  = f"Table {table_number}"
+
+    mf = _RE_CAP_FORMING.match(rest)
+    if mf:
+        result["title"] = mf.group(1).strip().rstrip(',').strip()
+        kind            = mf.group("kind").capitalize()
+        ref             = mf.group("ref").strip().rstrip('.')
+        result["forming_part_of"] = {
+            "kind":      kind,
+            "raw":       f"{kind} {ref}",
+            "number":    ref,
+            "target_id": "",
+            "resolved":  False,
+        }
+    else:
+        result["title"] = rest
+
+    return result
+
+
+def _extract_cell_refs(text: str) -> list:
+    """
+    Extract structured reference objects from a table cell or caption text.
+    References are returned unresolved (target_id="" , resolved=False).
+    Resolution happens later in reference_linker._link_table_references().
+    """
+    found: list = []
+    seen:  set  = set()
+    for pat in _TABLE_REF_PATS:
+        for m in pat.finditer(text):
+            kind = m.group("kind")
+            ref  = m.group("ref").strip().rstrip('.')
+            key  = (kind.lower(), ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append({
+                "text":      m.group(0).strip(),
+                "kind":      kind.capitalize(),
+                "number":    ref,
+                "target_id": "",
+                "resolved":  False,
+            })
+    return found
+
+
+def _enrich_tables_in_dict(doc_dict: dict) -> None:
+    """
+    Post-process the serialized document dict in-place to enrich all table
+    objects with structured caption, structured headers, structured rows with
+    cell-level reference extraction, and a deduplicated table-level
+    references[] list.
+
+    This runs AFTER asdict() so the internal parse/merge logic is unaffected.
+    Only operates on tables whose caption is still a plain string (idempotent).
+    """
+    def _enrich_one(tbl: dict) -> None:
+        tbl_id  = tbl.get("id", "")
+        raw_cap = tbl.get("caption", "")
+
+        # Guard: skip tables already enriched by a previous run
+        if isinstance(raw_cap, dict):
+            return
+
+        # ── Structured caption ────────────────────────────────────────────────
+        tbl["caption"] = parse_table_caption(raw_cap)
+
+        # ── Structured headers ───────────────────────────────────────────────
+        raw_headers: list = tbl.get("headers", [])
+        tbl["headers"] = [
+            {"index": i, "text": h}
+            for i, h in enumerate(raw_headers)
+            if isinstance(h, str)
+        ]
+
+        # ── Structured rows with cell references ─────────────────────────────
+        raw_rows: list    = tbl.get("rows", [])
+        tbl_page_span     = tbl.get("page_span") or [tbl.get("page", 0)]
+        new_rows: list    = []
+        for row_idx, row in enumerate(raw_rows, start=1):
+            if not isinstance(row, list):
+                continue
+            row_id = f"{tbl_id}-R{row_idx}"
+            cells  = []
+            for ci, cell_val in enumerate(row):
+                cell_text   = cell_val if isinstance(cell_val, str) else ""
+                header_text = raw_headers[ci] if ci < len(raw_headers) else ""
+                cells.append({
+                    "col_index":  ci,
+                    "header":     header_text,
+                    "raw":        cell_text,
+                    "value":      cell_text,
+                    "references": _extract_cell_refs(cell_text),
+                })
+            new_rows.append({
+                "row_id":    row_id,
+                "cells":     cells,
+                "page_span": tbl_page_span,
+            })
+        tbl["rows"] = new_rows
+
+        # ── Table-level deduplicated references ──────────────────────────────
+        table_refs: list = []
+        seen_refs:  set  = set()
+
+        def _add_ref(ref: dict, source: str) -> None:
+            key = (ref.get("kind", "").lower(), ref.get("number", ""))
+            if key in seen_refs or not key[1]:
+                return
+            seen_refs.add(key)
+            entry = dict(ref)
+            entry["source"] = source
+            table_refs.append(entry)
+
+        # From caption forming_part_of
+        cap = tbl["caption"]
+        if cap.get("forming_part_of"):
+            fp = cap["forming_part_of"]
+            _add_ref(fp, "caption")
+
+        # From caption raw text (refs in title part of caption)
+        for r in _extract_cell_refs(cap.get("raw", "")):
+            _add_ref(r, "caption")
+
+        # From all cells
+        for row_dict in new_rows:
+            for cell in row_dict.get("cells", []):
+                for r in cell.get("references", []):
+                    _add_ref(r, "cell")
+
+        tbl["references"] = table_refs
+
+    def _walk(node) -> None:
+        if isinstance(node, dict):
+            for tbl in node.get("tables", []):
+                _enrich_one(tbl)
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(doc_dict)
+
+
+# =============================================================================
 # Main parser
 # =============================================================================
 
@@ -616,7 +883,8 @@ class StructureParser:
         # Internal indexes (populated during parsing)
         self._images_dict     = {}   # image_key -> base64 from Datalab result
         self._page_objects    = []   # raw page list for section_hierarchy lookup
-        self._clause_index    = {}   # clause_id -> Clause
+        self._article_index   = {}   # article_id -> Article
+        self._clause_index    = self._article_index  # backward compat alias
         self._subsec_index    = {}   # subsec_id -> Subsection
         self._section_index   = {}   # sec_id    -> Section
         self._notes_section_index = {}   # "SEC-NOTES-{part_id}" -> Section
@@ -830,13 +1098,15 @@ class StructureParser:
         current_part:     Optional[Part]                   = None
         current_section:  Optional[Section]                = None
         current_subsection: Optional[Subsection]           = None
-        current_clause:   Optional[Clause]                 = None
+        current_article:  Optional[Article]                = None
+        current_sentence_node: Optional[Sentence]          = None
+        current_clause_node:   Optional[Clause]            = None
         current_appendix: Optional[Appendix]               = None
         current_pref_sec: Optional[PrefaceSection]         = None
         current_pref_subsec: Optional[PrefaceSubsection]   = None
         current_cf_sec:   Optional[ConversionFactorsSection] = None
         current_notes_section: Optional[Section] = None
-        current_note_clause:   Optional[Clause]  = None
+        current_note_article:  Optional[Article] = None
 
         pending_caption: str = ""
 
@@ -849,9 +1119,10 @@ class StructureParser:
                 return current_section      # fallback: direct on section
             return None
 
-        # ── add_text: attach text to the current clause context ──────────────
+        # ── add_text: attach text to the current article context ─────────────
         def add_text(text: str, page: int, has_inline_math: bool = False):
-            nonlocal current_clause, current_section, current_subsection
+            nonlocal current_article, current_sentence_node, current_clause_node
+            nonlocal current_section, current_subsection
             nonlocal current_part, current_division
             nonlocal current_pref_sec, current_pref_subsec
             nonlocal current_cf_sec
@@ -890,20 +1161,26 @@ class StructureParser:
                 return
 
             # ── Normal / appendix mode ──
-            if not current_clause:
+            if not current_article:
                 # Rescue orphaned text — create minimal structure
                 if current_subsection:
-                    current_clause = self._make_clause("", "Orphaned Content",
-                                                       page, current_subsection)
+                    current_article = self._make_article("", "Orphaned Content",
+                                                         page, current_subsection)
+                    current_sentence_node = None
+                    current_clause_node = None
                 elif current_section:
-                    current_clause = self._make_clause("", "Orphaned Content",
-                                                       page, current_section)
+                    current_article = self._make_article("", "Orphaned Content",
+                                                         page, current_section)
+                    current_sentence_node = None
+                    current_clause_node = None
                 elif current_part:
-                    # Create minimal section + subsection to hold orphan
+                    # Create minimal section to hold orphan
                     current_section = self._make_section(
                         "0", "Preamble", page, current_part)
-                    current_clause = self._make_clause("", "Orphaned Content",
-                                                       page, current_section)
+                    current_article = self._make_article("", "Orphaned Content",
+                                                         page, current_section)
+                    current_sentence_node = None
+                    current_clause_node = None
                 else:
                     # No structure at all — route to preface if active
                     if preface.sections:
@@ -911,7 +1188,10 @@ class StructureParser:
                         _attach_text_to_content(container, text, page, has_inline_math)
                     return
 
-            _attach_text_to_content(current_clause, text, page, has_inline_math)
+            if current_notes_section is not None:
+                _attach_to_article_content(current_article, text, page, has_inline_math)
+            else:
+                _process_article_text(current_article, text, page, has_inline_math)
 
         def _attach_text_to_content(container, text: str, page: int,
                                     has_inline_math: bool = False):
@@ -946,6 +1226,135 @@ class StructureParser:
                         ))
             if hasattr(container, 'page_span') and page not in container.page_span:
                 container.page_span.append(page)
+
+        def _attach_to_article_content(article: Article, text: str, page: int,
+                                       has_inline_math: bool = False):
+            """Append text as ContentItems to article.content (used for notes/fallback)."""
+            _attach_text_to_content(article, text, page, has_inline_math)
+
+        def _process_article_text(article: Article, text: str, page: int,
+                                  has_inline_math: bool = False):
+            """Process text into Sentence/Clause/Subclause nodes under an Article."""
+            nonlocal current_sentence_node, current_clause_node
+
+            if not text:
+                return
+
+            if has_inline_math:
+                text = inline_math_to_markdown(text)
+
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                m_sent = RE_SENT_MARKER.match(line)
+                m_legal = RE_LEGAL_MARKER.match(line)
+
+                if m_sent:
+                    sent_num = m_sent.group(1)
+                    sent_content = m_sent.group(2).strip()
+                    sent_number = f"{article.number}.({sent_num})" if article.number else f"({sent_num})"
+                    art_id_safe = article.number.replace('.', '-') if article.number else "AUTO"
+                    sent_id = f"SENT-{art_id_safe}-{sent_num}"
+                    sentence = Sentence(
+                        id=sent_id,
+                        number=sent_number,
+                        marker=f"{sent_num})",
+                        content=sent_content,
+                        page_span=[page]
+                    )
+                    article.sentences.append(sentence)
+                    current_sentence_node = sentence
+                    current_clause_node = None
+
+                elif m_legal:
+                    marker_raw = m_legal.group(1)
+                    # Normalize: strip parens/trailing paren
+                    if marker_raw.startswith('('):
+                        inner = marker_raw[1:-1].lower()  # e.g. 'a', 'ii'
+                    else:
+                        inner = marker_raw[:-1].lower()  # e.g. 'a' from 'a)'
+                    content_text = m_legal.group(2).strip()
+
+                    # Determine: is this a Subclause or a Clause?
+                    # Roman numeral markers (i/v/x only) under an existing clause → Subclause
+                    # Everything else → Clause (including roman letters without a parent clause)
+                    is_subclause = _is_roman_numeral(inner) and current_clause_node is not None
+
+                    if is_subclause:
+                        # Subclause under current_clause_node
+                        sub_num = f"{current_clause_node.number}({inner})"
+                        sub_id_safe = current_clause_node.id.replace('CLAUSE-', '')
+                        sub_id = f"SUBCLAUSE-{sub_id_safe}-{inner}"
+                        sub = Subclause(
+                            id=sub_id,
+                            number=sub_num,
+                            marker=f"({inner})",
+                            content=content_text,
+                            page_span=[page]
+                        )
+                        current_clause_node.subclauses.append(sub)
+                    else:
+                        # New Clause under current sentence
+                        # (Resets current_clause_node so sibling clauses work correctly)
+                        if current_sentence_node is None:
+                            # Create implicit sentence 0 for intro text
+                            art_id_safe = article.number.replace('.', '-') if article.number else "AUTO"
+                            sent_id = f"SENT-{art_id_safe}-0"
+                            sentence = Sentence(
+                                id=sent_id,
+                                number=f"{article.number}.(0)" if article.number else "(0)",
+                                marker="",
+                                content="",
+                                page_span=[page]
+                            )
+                            article.sentences.append(sentence)
+                            current_sentence_node = sentence
+
+                        art_id_safe = article.number.replace('.', '-') if article.number else "AUTO"
+                        sent_marker_safe = (current_sentence_node.marker.rstrip(')')
+                                            if current_sentence_node.marker else "0")
+                        clause_id = f"CLAUSE-{art_id_safe}-{sent_marker_safe}-{inner}"
+                        clause_num = f"{current_sentence_node.number}({inner})"
+                        clause = Clause(
+                            id=clause_id,
+                            number=clause_num,
+                            marker=f"({inner})",
+                            content=content_text,
+                            page_span=[page]
+                        )
+                        current_sentence_node.clauses.append(clause)
+                        current_clause_node = clause  # update current clause
+
+                else:
+                    # Plain text continuation
+                    if current_clause_node is not None:
+                        current_clause_node.content = (
+                            current_clause_node.content + " " + line).strip()
+                    elif current_sentence_node is not None:
+                        current_sentence_node.content = (
+                            current_sentence_node.content + " " + line).strip()
+                    else:
+                        # No sentence yet: attach to last sentence or create implicit one
+                        if article.sentences:
+                            article.sentences[-1].content = (
+                                article.sentences[-1].content + " " + line).strip()
+                        else:
+                            art_id_safe = article.number.replace('.', '-') if article.number else "AUTO"
+                            sent_id = f"SENT-{art_id_safe}-0"
+                            sentence = Sentence(
+                                id=sent_id,
+                                number=f"{article.number}.(0)" if article.number else "(0)",
+                                marker="",
+                                content=line,
+                                page_span=[page]
+                            )
+                            article.sentences.append(sentence)
+                            current_sentence_node = sentence
+
+                if page not in article.page_span:
+                    article.page_span.append(page)
 
         # ── Main block loop ───────────────────────────────────────────────────
         for block in blocks:
@@ -991,10 +1400,12 @@ class StructureParser:
                         current_part       = None
                         current_section    = None
                         current_subsection = None
-                        current_clause     = None
+                        current_article    = None
+                        current_sentence_node = None
+                        current_clause_node   = None
                         current_appendix   = None
                         current_notes_section = None
-                        current_note_clause   = None
+                        current_note_article  = None
 
                     elif div_desc and (mode == "preface" or has_hr):
                         # Descriptive Division heading → Preface subsection reference
@@ -1065,9 +1476,11 @@ class StructureParser:
                         mode               = "appendix"
                         current_section    = None
                         current_subsection = None
-                        current_clause     = None
+                        current_article    = None
+                        current_sentence_node = None
+                        current_clause_node   = None
                         current_notes_section = None
-                        current_note_clause   = None
+                        current_note_article  = None
                         continue
 
                 # =================================================================
@@ -1106,8 +1519,10 @@ class StructureParser:
                                 if page not in existing_notes.page_span:
                                     existing_notes.page_span.append(page)
                             current_notes_section = existing_notes
-                            current_note_clause   = None
-                            current_clause        = None
+                            current_note_article  = None
+                            current_article       = None
+                            current_sentence_node = None
+                            current_clause_node   = None
                             current_subsection    = None
                             current_section       = current_notes_section
                         continue
@@ -1193,10 +1608,12 @@ class StructureParser:
                     mode               = "normal"
                     current_section    = None
                     current_subsection = None
-                    current_clause     = None
+                    current_article    = None
+                    current_sentence_node = None
+                    current_clause_node   = None
                     current_appendix   = None
                     current_notes_section = None
-                    current_note_clause   = None
+                    current_note_article  = None
 
                 elif current_notes_section is not None:
                     # ── Notes mode: route all non-Part headings here ──────────
@@ -1209,29 +1626,33 @@ class StructureParser:
                             note_title = rest[:dot_m.start()].strip()
                         else:
                             note_title = rest.rstrip('.').strip()
-                        current_note_clause = self._make_note_clause(
+                        current_note_article = self._make_note_article(
                             note_num, note_title, page, current_notes_section
                         )
-                        current_clause = current_note_clause
+                        current_article = current_note_article
+                        current_sentence_node = None
+                        current_clause_node = None
                         if page not in current_notes_section.page_span:
                             current_notes_section.page_span.append(page)
                     else:
-                        # Sub-heading within a note clause
-                        if current_note_clause:
-                            current_note_clause.content.append(
+                        # Sub-heading within a note article
+                        if current_note_article:
+                            current_note_article.content.append(
                                 ContentItem(type="text", value=f"**{clean}**")
                             )
-                            if page not in current_note_clause.page_span:
-                                current_note_clause.page_span.append(page)
+                            if page not in current_note_article.page_span:
+                                current_note_article.page_span.append(page)
 
                 elif m4 and (current_subsection or current_section):
-                    # 4-number → Clause
+                    # 4-number → Article
                     num   = m4.group(1)
                     title = m4.group(2).lstrip(". ").strip() or num
                     container = current_subsection or self._ensure_subsection(
                         num, page, current_section)
                     if container:
-                        current_clause = self._make_clause(num, title, page, container)
+                        current_article = self._make_article(num, title, page, container)
+                        current_sentence_node = None
+                        current_clause_node = None
 
                 elif m4 and current_part:
                     # 4-number but no section yet — create minimal parents
@@ -1242,7 +1663,9 @@ class StructureParser:
                     current_subsection = self._make_subsection(sub_num, sub_num, page, current_section)
                     num   = m4.group(1)
                     title = m4.group(2).lstrip(". ").strip() or num
-                    current_clause = self._make_clause(num, title, page, current_subsection)
+                    current_article = self._make_article(num, title, page, current_subsection)
+                    current_sentence_node = None
+                    current_clause_node = None
 
                 elif m3 and (current_section or current_part or current_appendix):
                     # 3-number → Subsection
@@ -1256,7 +1679,9 @@ class StructureParser:
                                 '.'.join(num.split('.')[:2]), num, page, parent)
                     if parent_sec:
                         current_subsection = self._make_subsection(num, title, page, parent_sec)
-                        current_clause = None
+                        current_article = None
+                        current_sentence_node = None
+                        current_clause_node = None
 
                 elif m2 and (current_part or current_appendix):
                     # 2-number → Section
@@ -1266,29 +1691,37 @@ class StructureParser:
                     if parent:
                         current_section    = self._make_section(num, title, page, parent)
                         current_subsection = None
-                        current_clause     = None
+                        current_article    = None
+                        current_sentence_node = None
+                        current_clause_node   = None
 
                 elif m2 and current_section and not current_part:
                     # Mislabeled h1 — still a section
                     num, title = m2.group(1), (m2.group(2).strip() or m2.group(1))
                     current_section    = self._make_section(num, title, page, current_section)
                     current_subsection = None
-                    current_clause     = None
+                    current_article    = None
+                    current_sentence_node = None
+                    current_clause_node   = None
 
                 elif current_subsection:
-                    # Plain label under a subsection → unnumbered Clause
-                    current_clause = self._make_clause("", clean, page, current_subsection)
+                    # Plain label under a subsection → unnumbered Article
+                    current_article = self._make_article("", clean, page, current_subsection)
+                    current_sentence_node = None
+                    current_clause_node = None
 
                 elif current_section:
-                    # Plain label under a section → unnumbered Clause
-                    current_clause = self._make_clause("", clean, page, current_section)
+                    # Plain label under a section → unnumbered Article
+                    current_article = self._make_article("", clean, page, current_section)
+                    current_sentence_node = None
+                    current_clause_node = None
 
-                elif current_clause:
-                    # Sub-label within current clause
-                    current_clause.content.append(
+                elif current_article:
+                    # Sub-label within current article
+                    current_article.content.append(
                         ContentItem(type="text", value=f"**{clean}**"))
-                    if page not in current_clause.page_span:
-                        current_clause.page_span.append(page)
+                    if page not in current_article.page_span:
+                        current_article.page_span.append(page)
                 # else: orphan heading before any structure — skip
 
             # =================================================================
@@ -1307,7 +1740,7 @@ class StructureParser:
                     add_text(text, page, has_inline_math)
 
                 elif current_notes_section is not None:
-                    # ── Notes mode text: detect new note clauses ──────────────
+                    # ── Notes mode text: detect new note articles ─────────────
                     m_note = RE_NOTE_CLAUSE.match(check_line)
                     if m_note:
                         note_num      = m_note.group(1)
@@ -1319,10 +1752,12 @@ class StructureParser:
                         else:
                             note_title      = rest_of_line.rstrip('.').strip()
                             first_line_tail = ""
-                        current_note_clause = self._make_note_clause(
+                        current_note_article = self._make_note_article(
                             note_num, note_title, page, current_notes_section
                         )
-                        current_clause = current_note_clause
+                        current_article = current_note_article
+                        current_sentence_node = None
+                        current_clause_node = None
                         if page not in current_notes_section.page_span:
                             current_notes_section.page_span.append(page)
                         # Attach remaining content from this block
@@ -1332,30 +1767,34 @@ class StructureParser:
                             full_tail = (full_tail + " " + " ".join(remaining)).strip()
                         if full_tail:
                             _attach_text_to_content(
-                                current_note_clause, full_tail, page, has_inline_math
+                                current_note_article, full_tail, page, has_inline_math
                             )
                     else:
-                        # Continuation text → attach to current note clause
-                        target = current_note_clause
+                        # Continuation text → attach to current note article
+                        target = current_note_article
                         if target is None:
-                            target = self._make_note_clause(
+                            target = self._make_note_article(
                                 "", "General Notes", page, current_notes_section
                             )
-                            current_note_clause = target
-                            current_clause      = target
+                            current_note_article = target
+                            current_article      = target
+                            current_sentence_node = None
+                            current_clause_node = None
                         _attach_text_to_content(
                             target, text, page, has_inline_math
                         )
 
                 elif m4 and (current_subsection or current_section):
                     num = m4.group(1)
-                    cid = f"CL-{num.replace('.', '-')}"
-                    if cid not in self._clause_index:
+                    aid = f"ART-{num.replace('.', '-')}"
+                    if aid not in self._article_index:
                         title     = m4.group(2).lstrip(". ").strip() or num
                         container = current_subsection or self._ensure_subsection(
                             num, page, current_section)
                         if container:
-                            current_clause = self._make_clause(num, title, page, container)
+                            current_article = self._make_article(num, title, page, container)
+                            current_sentence_node = None
+                            current_clause_node = None
                     else:
                         add_text(text, page, has_inline_math)
 
@@ -1371,7 +1810,9 @@ class StructureParser:
                         if parent_sec:
                             current_subsection = self._make_subsection(
                                 num, title, page, parent_sec)
-                            current_clause = None
+                            current_article = None
+                            current_sentence_node = None
+                            current_clause_node = None
                     else:
                         add_text(text, page, has_inline_math)
 
@@ -1382,7 +1823,9 @@ class StructureParser:
                         title      = sec.group(2).strip()
                         current_section    = self._make_section(num, title, page, current_part)
                         current_subsection = None
-                        current_clause     = None
+                        current_article    = None
+                        current_sentence_node = None
+                        current_clause_node   = None
                     else:
                         add_text(text, page, has_inline_math)
 
@@ -1393,8 +1836,8 @@ class StructureParser:
             # EQUATION
             # =================================================================
             elif btype == "equation":
-                target = self._resolve_clause_target(
-                    current_clause,
+                target = self._resolve_article_target(
+                    current_article,
                     block.get("raw", {}).get("section_hierarchy", {}),
                     current_subsection, current_section
                 )
@@ -1466,8 +1909,8 @@ class StructureParser:
                             current_cf_sec.page_span.append(page)
                     continue
 
-                target = self._resolve_clause_target(
-                    current_clause,
+                target = self._resolve_article_target(
+                    current_article,
                     block.get("raw", {}).get("section_hierarchy", {}),
                     current_subsection, current_section
                 )
@@ -1479,13 +1922,15 @@ class StructureParser:
                 elif current_subsection or current_section:
                     # Orphan holder
                     container = current_subsection or current_section
-                    orphan = self._make_clause(
+                    orphan = self._make_article(
                         "", caption or alt_text[:60] or f"Figure {fig_id}",
                         page, container
                     )
                     orphan.figures.append(fig_obj)
                     orphan.content.append(content_item)
-                    current_clause = orphan
+                    current_article = orphan
+                    current_sentence_node = None
+                    current_clause_node = None
 
             # =================================================================
             # CAPTION (for tables)
@@ -1507,7 +1952,8 @@ class StructureParser:
                         pending_caption = ""
                         headers, rows = parse_table_html(text)
                         tbl_obj = Table(id=tbl_id, caption=caption,
-                                        headers=headers, rows=rows, page=page)
+                                        headers=headers, rows=rows, page=page,
+                                        page_span=[page])
                         container.tables.append(tbl_obj)
                         container.content.append(ContentItem(
                             type="table", table_id=tbl_id, value=caption))
@@ -1533,7 +1979,8 @@ class StructureParser:
                     pending_caption = ""
                     headers, rows = parse_table_html(text)
                     tbl_obj = Table(id=tbl_id, caption=caption,
-                                    headers=headers, rows=rows, page=page)
+                                    headers=headers, rows=rows, page=page,
+                                    page_span=[page])
                     current_cf_sec.tables.append(tbl_obj)
                     current_cf_sec.content.append(ContentItem(
                         type="table", table_id=tbl_id, value=caption))
@@ -1541,8 +1988,8 @@ class StructureParser:
                         current_cf_sec.page_span.append(page)
                     continue
 
-                tbl_target = self._resolve_clause_target(
-                    current_clause,
+                tbl_target = self._resolve_article_target(
+                    current_article,
                     block.get("raw", {}).get("section_hierarchy", {}),
                     current_subsection, current_section
                 )
@@ -1554,7 +2001,8 @@ class StructureParser:
                     headers, rows = parse_table_html(text)
                     tbl_obj = Table(
                         id=tbl_id, caption=caption,
-                        headers=headers, rows=rows, page=page
+                        headers=headers, rows=rows, page=page,
+                        page_span=[page]
                     )
                     tbl_target.tables.append(tbl_obj)
                     tbl_target.content.append(ContentItem(
@@ -1580,36 +2028,42 @@ class StructureParser:
     # Hierarchy resolution helpers
     # -------------------------------------------------------------------------
 
-    def _resolve_clause_target(self, current_clause, section_hierarchy: dict,
-                                current_subsection, current_section) -> Optional[Clause]:
+    def _resolve_article_target(self, current_article, section_hierarchy: dict,
+                                current_subsection, current_section) -> Optional[Article]:
         """
-        Return the best Clause to attach content to.
-        1. current_clause if set
+        Return the best Article to attach content to.
+        1. current_article if set
         2. Resolve via Datalab section_hierarchy dict
-        3. Last clause in current_subsection or current_section
+        3. Last article in current_subsection or current_section
         """
-        if current_clause:
-            return current_clause
+        if current_article:
+            return current_article
 
         if section_hierarchy and self._page_objects:
             resolved = self._resolve_hier_target(section_hierarchy)
             if resolved:
                 return resolved
 
-        if current_subsection and current_subsection.clauses:
-            return current_subsection.clauses[-1]
-        if current_section and current_section.clauses:
-            return current_section.clauses[-1]
+        if current_subsection and current_subsection.articles:
+            return current_subsection.articles[-1]
+        if current_section and current_section.articles:
+            return current_section.articles[-1]
         # Check last subsection of current section
         if current_section and current_section.subsections:
             last_sub = current_section.subsections[-1]
-            if last_sub.clauses:
-                return last_sub.clauses[-1]
+            if last_sub.articles:
+                return last_sub.articles[-1]
         return None
 
-    def _resolve_hier_target(self, section_hierarchy: dict) -> Optional[Clause]:
+    # Keep backward compat alias
+    def _resolve_clause_target(self, current_article, section_hierarchy: dict,
+                                current_subsection, current_section) -> Optional[Article]:
+        return self._resolve_article_target(
+            current_article, section_hierarchy, current_subsection, current_section)
+
+    def _resolve_hier_target(self, section_hierarchy: dict) -> Optional[Article]:
         """
-        Use Datalab section_hierarchy to find/create the owning Clause.
+        Use Datalab section_hierarchy to find/create the owning Article.
         Walks /page/{idx}/{type}/{child} paths via _page_objects.
         """
         for level_key in sorted(section_hierarchy, key=lambda k: -int(k)):
@@ -1633,17 +2087,17 @@ class StructureParser:
 
             if m4:
                 num = m4.group(1)
-                cid = f"CL-{num.replace('.', '-')}"
-                if cid in self._clause_index:
-                    return self._clause_index[cid]
+                aid = f"ART-{num.replace('.', '-')}"
+                if aid in self._article_index:
+                    return self._article_index[aid]
                 # Not created yet — try to find parent subsection
                 parts = num.split('.')
                 if len(parts) >= 3:
                     sub_id = f"SUBSEC-{'-'.join(parts[:3])}"
                     if sub_id in self._subsec_index:
                         title = m4.group(2).lstrip('. ').strip() or num
-                        return self._make_clause(num, title, page_idx + 1,
-                                                  self._subsec_index[sub_id])
+                        return self._make_article(num, title, page_idx + 1,
+                                                   self._subsec_index[sub_id])
                     # Try parent section
                     sec_id = f"SEC-{'-'.join(parts[:2])}"
                     if sec_id in self._section_index:
@@ -1651,25 +2105,25 @@ class StructureParser:
                         sub = self._make_subsection(
                             '.'.join(parts[:3]), '', page_idx + 1, sec)
                         title = m4.group(2).lstrip('. ').strip() or num
-                        return self._make_clause(num, title, page_idx + 1, sub)
+                        return self._make_article(num, title, page_idx + 1, sub)
                 continue
 
             if m3:
                 sub_id = f"SUBSEC-{m3.group(1).replace('.', '-')}"
                 if sub_id in self._subsec_index:
                     sub = self._subsec_index[sub_id]
-                    if sub.clauses:
-                        return sub.clauses[-1]
+                    if sub.articles:
+                        return sub.articles[-1]
                 # Fall through to section check
                 sec_id = f"SEC-{m3.group(1).replace('.', '-').rsplit('-', 1)[0]}"
                 if sec_id in self._section_index:
                     sec = self._section_index[sec_id]
                     if sec.subsections:
                         last_sub = sec.subsections[-1]
-                        if last_sub.clauses:
-                            return last_sub.clauses[-1]
-                    if sec.clauses:
-                        return sec.clauses[-1]
+                        if last_sub.articles:
+                            return last_sub.articles[-1]
+                    if sec.articles:
+                        return sec.articles[-1]
                 continue
 
         return None
@@ -1735,49 +2189,67 @@ class StructureParser:
         self._subsec_index[sid] = sub
         return sub
 
-    def _make_clause(self, number: str, title: str,
-                     page: int, parent) -> Clause:
+    def _make_article(self, number: str, title: str,
+                      page: int, parent) -> Article:
         """
-        Create a Clause under parent (Subsection or Section).
-        parent must have a .clauses list.
+        Create an Article under parent (Subsection or Section).
+        parent must have an .articles list.
         """
-        cl = Clause(
-            id=self._clause_id_for(number),
+        art = Article(
+            id=self._article_id_for(number),
             number=number, title=title,
             page_span=[page]
         )
-        parent.clauses.append(cl)
-        self._clause_index[cl.id] = cl
-        return cl
+        parent.articles.append(art)
+        self._article_index[art.id] = art
+        return art
 
-    def _clause_id_for(self, number: str) -> str:
+    # Keep backward compat alias
+    def _make_clause(self, number: str, title: str,
+                     page: int, parent) -> Article:
+        return self._make_article(number, title, page, parent)
+
+    def _article_id_for(self, number: str) -> str:
         if number:
-            return f"CL-{number.replace('.', '-')}"
+            return f"ART-{number.replace('.', '-')}"
         self._auto_clause_counter += 1
-        return f"CL-AUTO-{self._auto_clause_counter}"
+        return f"ART-AUTO-{self._auto_clause_counter}"
 
-    def _note_clause_id_for(self, note_number: str) -> str:
-        """Generate a stable ID for a note clause from its A-... number."""
+    # Keep backward compat alias
+    def _clause_id_for(self, number: str) -> str:
+        return self._article_id_for(number)
+
+    def _note_article_id_for(self, note_number: str) -> str:
+        """Generate a stable ID for a note article from its A-... number."""
         if not note_number:
             self._auto_clause_counter += 1
-            return f"CL-NOTE-AUTO-{self._auto_clause_counter}"
+            return f"ART-NOTE-AUTO-{self._auto_clause_counter}"
         safe = note_number.replace('.', '-').replace('(', '-').replace(')', '-')
-        return f"CL-NOTE-{safe}"
+        return f"ART-NOTE-{safe}"
 
-    def _make_note_clause(self, note_number: str, title: str,
-                          page: int, notes_section: Section) -> Clause:
-        """Create (or return existing) Clause for a note entry."""
-        cl_id = self._note_clause_id_for(note_number)
-        existing = self._clause_index.get(cl_id)
+    # Keep backward compat alias
+    def _note_clause_id_for(self, note_number: str) -> str:
+        return self._note_article_id_for(note_number)
+
+    def _make_note_article(self, note_number: str, title: str,
+                           page: int, notes_section: Section) -> Article:
+        """Create (or return existing) Article for a note entry."""
+        art_id = self._note_article_id_for(note_number)
+        existing = self._article_index.get(art_id)
         if existing:
             if page not in existing.page_span:
                 existing.page_span.append(page)
             return existing
-        cl = Clause(id=cl_id, number=note_number, title=title,
-                    page_span=[page])
-        notes_section.clauses.append(cl)
-        self._clause_index[cl_id] = cl
-        return cl
+        art = Article(id=art_id, number=note_number, title=title,
+                      page_span=[page])
+        notes_section.articles.append(art)
+        self._article_index[art_id] = art
+        return art
+
+    # Keep backward compat alias
+    def _make_note_clause(self, note_number: str, title: str,
+                          page: int, notes_section: Section) -> Article:
+        return self._make_note_article(note_number, title, page, notes_section)
 
     # -------------------------------------------------------------------------
     # Post-processing
@@ -1785,16 +2257,16 @@ class StructureParser:
 
     def _remove_empty_clauses(self, preface: Preface,
                                divisions: List[Division]):
-        """Remove clauses that have no content, figures, tables, or equations."""
+        """Remove articles that have no sentences, content, figures, tables, or equations."""
         def _clean_section(section: Section):
             for subsec in section.subsections:
-                subsec.clauses = [
-                    cl for cl in subsec.clauses
-                    if cl.content or cl.figures or cl.tables or cl.equations
+                subsec.articles = [
+                    art for art in subsec.articles
+                    if art.sentences or art.content or art.figures or art.tables or art.equations
                 ]
-            section.clauses = [
-                cl for cl in section.clauses
-                if cl.content or cl.figures or cl.tables or cl.equations
+            section.articles = [
+                art for art in section.articles
+                if art.sentences or art.content or art.figures or art.tables or art.equations
             ]
 
         for div in divisions:
@@ -1806,7 +2278,7 @@ class StructureParser:
                     _clean_section(section)
 
     def _merge_continued_tables(self, divisions: List[Division]):
-        """Merge multi-page (continued) table fragments within each clause."""
+        """Merge multi-page (continued) table fragments within each article."""
         cont_re = re.compile(r'\s*\(continued\)', re.IGNORECASE)
 
         def _tbl_number_norm(caption: str) -> str:
@@ -1816,15 +2288,15 @@ class StructureParser:
                 return re.sub(r'[.\-\s]', '', m.group(1)).lower()
             return cap.lower()
 
-        def _process_clauses(clauses):
-            for clause in clauses:
-                if len(clause.tables) <= 1:
+        def _process_articles(articles):
+            for article in articles:
+                if len(article.tables) <= 1:
                     continue
 
                 ids_to_remove: set = set()
                 base_map: dict = {}
 
-                for tbl in clause.tables:
+                for tbl in article.tables:
                     cap     = tbl.caption
                     is_cont = bool(cont_re.search(cap))
                     norm    = _tbl_number_norm(cap)
@@ -1839,15 +2311,15 @@ class StructureParser:
                 if not ids_to_remove:
                     continue
 
-                clause.tables = [t for t in clause.tables
-                                 if t.id not in ids_to_remove]
-                clause.content = [
-                    item for item in clause.content
+                article.tables = [t for t in article.tables
+                                   if t.id not in ids_to_remove]
+                article.content = [
+                    item for item in article.content
                     if not (item.type == "table" and item.table_id in ids_to_remove)
                 ]
 
                 # Cross-page rowspan carry (sandwich detection) for 2-col tables
-                for tbl in clause.tables:
+                for tbl in article.tables:
                     if len(tbl.headers) != 2:
                         continue
                     next_val: dict = {}
@@ -1875,8 +2347,8 @@ class StructureParser:
 
         def _process_section(section: Section):
             for subsec in section.subsections:
-                _process_clauses(subsec.clauses)
-            _process_clauses(section.clauses)
+                _process_articles(subsec.articles)
+            _process_articles(section.articles)
 
         for div in divisions:
             for part in div.parts:
@@ -1891,7 +2363,9 @@ class StructureParser:
     # -------------------------------------------------------------------------
 
     def to_dict(self, document: Document) -> dict:
-        return asdict(document)
+        doc_dict = asdict(document)
+        _enrich_tables_in_dict(doc_dict)
+        return doc_dict
 
 
 # =============================================================================

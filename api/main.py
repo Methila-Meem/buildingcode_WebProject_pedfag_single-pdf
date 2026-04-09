@@ -84,15 +84,45 @@ def get_full_document():
 
 @app.get("/document/summary")
 def get_document_summary():
-    """Return lightweight summary (no clause text) for navigation sidebar."""
+    """Return lightweight summary (no article text) for navigation sidebar."""
     doc = get_document()
     summary = {
         "title": doc.get("title"),
         "source_pdf": doc.get("source_pdf"),
         "total_pages": doc.get("total_pages"),
         "stats": doc.get("_stats"),
-        "chapters": []
+        "divisions": []
     }
+    for div in doc.get("divisions", []):
+        div_summary = {
+            "id": div["id"],
+            "number": div["number"],
+            "title": div["title"],
+            "parts": []
+        }
+        for part in div.get("parts", []):
+            part_summary = {
+                "id": part["id"],
+                "number": part["number"],
+                "title": part["title"],
+                "sections": []
+            }
+            for section in part.get("sections", []):
+                article_count = sum(
+                    len(sub.get("articles", sub.get("clauses", [])))
+                    for sub in section.get("subsections", [])
+                ) + len(section.get("articles", section.get("clauses", [])))
+                sec_summary = {
+                    "id": section["id"],
+                    "number": section["number"],
+                    "title": section["title"],
+                    "article_count": article_count,
+                }
+                part_summary["sections"].append(sec_summary)
+            div_summary["parts"].append(part_summary)
+        summary["divisions"].append(div_summary)
+    # Old schema fallback
+    summary["chapters"] = []
     for chapter in doc.get("chapters", []):
         ch_summary = {
             "id": chapter["id"],
@@ -114,8 +144,18 @@ def get_document_summary():
 
 @app.get("/section/{section_id}")
 def get_section(section_id: str):
-    """Return a single section with all its clauses."""
+    """Return a single section with all its articles."""
     doc = get_document()
+    for div in doc.get("divisions", []):
+        for part in div.get("parts", []):
+            for section in part.get("sections", []):
+                if section["id"] == section_id:
+                    return section
+        for appendix in div.get("appendices", []):
+            for section in appendix.get("sections", []):
+                if section["id"] == section_id:
+                    return section
+    # Old schema fallback
     for chapter in doc.get("chapters", []):
         for section in chapter.get("sections", []):
             if section["id"] == section_id:
@@ -125,8 +165,34 @@ def get_section(section_id: str):
 
 @app.get("/clause/{clause_id}")
 def get_clause(clause_id: str):
-    """Return a single clause with full detail including sub-clauses and references."""
+    """Return a single article with full detail including sentences and references."""
     doc = get_document()
+    for div in doc.get("divisions", []):
+        for part in div.get("parts", []):
+            for section in part.get("sections", []):
+                for subsec in section.get("subsections", []):
+                    for article in subsec.get("articles", subsec.get("clauses", [])):
+                        if article["id"] == clause_id:
+                            return {
+                                **article,
+                                "_breadcrumb": {
+                                    "division": {"id": div["id"], "title": div["title"]},
+                                    "part":     {"id": part["id"], "title": part["title"]},
+                                    "section":  {"id": section["id"], "title": section["title"]},
+                                    "subsection": {"id": subsec["id"], "title": subsec["title"]},
+                                }
+                            }
+                for article in section.get("articles", section.get("clauses", [])):
+                    if article["id"] == clause_id:
+                        return {
+                            **article,
+                            "_breadcrumb": {
+                                "division": {"id": div["id"], "title": div["title"]},
+                                "part":     {"id": part["id"], "title": part["title"]},
+                                "section":  {"id": section["id"], "title": section["title"]},
+                            }
+                        }
+    # Old schema fallback
     for chapter in doc.get("chapters", []):
         for section in chapter.get("sections", []):
             for clause in section.get("clauses", []):
@@ -138,7 +204,7 @@ def get_clause(clause_id: str):
                             "section": {"id": section["id"], "title": section["title"]},
                         }
                     }
-    raise HTTPException(status_code=404, detail=f"Clause '{clause_id}' not found")
+    raise HTTPException(status_code=404, detail=f"Article/Clause '{clause_id}' not found")
 
 
 @app.get("/search")
@@ -201,26 +267,51 @@ def search(q: str = Query(..., min_length=2, description="Search term")):
 @app.get("/references/{node_id}")
 def get_references(node_id: str):
     """
-    Return all clauses that contain a reference pointing TO this node_id.
+    Return all articles that contain a reference pointing TO this node_id.
     Useful for "what references this section?" reverse lookup.
     """
     doc = get_document()
-    referring_clauses = []
+    referring_articles = []
 
+    # New schema
+    for div in doc.get("divisions", []):
+        for part in div.get("parts", []):
+            for section in part.get("sections", []):
+                for subsec in section.get("subsections", []):
+                    for article in subsec.get("articles", subsec.get("clauses", [])):
+                        for ref in article.get("references", []):
+                            if ref.get("target_id") == node_id:
+                                referring_articles.append({
+                                    "clause_id": article["id"],
+                                    "clause_number": article.get("number", ""),
+                                    "clause_title": article.get("title", ""),
+                                    "reference_text": ref["text"],
+                                })
+                for article in section.get("articles", section.get("clauses", [])):
+                    for ref in article.get("references", []):
+                        if ref.get("target_id") == node_id:
+                            referring_articles.append({
+                                "clause_id": article["id"],
+                                "clause_number": article.get("number", ""),
+                                "clause_title": article.get("title", ""),
+                                "reference_text": ref["text"],
+                            })
+
+    # Old schema fallback
     for chapter in doc.get("chapters", []):
         for section in chapter.get("sections", []):
             for clause in section.get("clauses", []):
                 for ref in clause.get("references", []):
                     if ref.get("target_id") == node_id:
-                        referring_clauses.append({
+                        referring_articles.append({
                             "clause_id": clause["id"],
-                            "clause_number": clause["number"],
-                            "clause_title": clause["title"],
+                            "clause_number": clause.get("number", ""),
+                            "clause_title": clause.get("title", ""),
                             "reference_text": ref["text"],
                         })
 
     return {
         "node_id": node_id,
-        "referenced_by_count": len(referring_clauses),
-        "referenced_by": referring_clauses,
+        "referenced_by_count": len(referring_articles),
+        "referenced_by": referring_articles,
     }

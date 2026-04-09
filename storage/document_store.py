@@ -58,39 +58,141 @@ def load_document(filename: str = "structured_document.json") -> dict:
         return json.load(f)
 
 
+def _article_text_parts(article: dict) -> list:
+    """
+    Extract all searchable text parts from an article (and its nested sentences/clauses).
+    Handles both new hierarchy (sentences[]) and notes/fallback content[].
+    """
+    parts = []
+
+    # content[] items (notes mode / fallback)
+    for item in article.get("content", []):
+        itype = item.get("type", "")
+        if itype in ("text", "sub_clause"):
+            v = item.get("value", "").strip()
+            if v:
+                parts.append(v)
+        elif itype == "equation":
+            latex = item.get("latex", "").strip()
+            if latex:
+                parts.append(latex)
+        elif itype == "figure":
+            cap = item.get("caption", "").strip()
+            alt = item.get("alt_text", "").strip()
+            if cap:
+                parts.append(cap)
+            elif alt:
+                parts.append(alt[:120])
+        elif itype == "table":
+            cap = item.get("value", "").strip()
+            if cap:
+                parts.append(cap)
+
+    # sentences[] -> clauses[] -> subclauses[] (normal mode)
+    for sent in article.get("sentences", []):
+        if sent.get("content"):
+            parts.append(sent["content"])
+        for cl in sent.get("clauses", []):
+            if cl.get("content"):
+                parts.append(cl["content"])
+            for sub in cl.get("subclauses", []):
+                if sub.get("content"):
+                    parts.append(sub["content"])
+
+    # Tables and figures at article level
+    for tbl in article.get("tables", []):
+        cap = tbl.get("caption", "")
+        if isinstance(cap, dict):
+            cap = cap.get("raw", "")
+        cap = cap.strip()
+        if cap:
+            parts.append(cap)
+    for fig in article.get("figures", []):
+        cap = fig.get("caption", "").strip()
+        alt = fig.get("alt_text", "").strip()
+        if cap:
+            parts.append(cap)
+        elif alt:
+            parts.append(alt[:120])
+
+    return parts
+
+
+def _article_snippet(article: dict) -> str:
+    """Extract a short snippet from an article for search result display."""
+    # Try first sentence content
+    for sent in article.get("sentences", []):
+        if sent.get("content"):
+            return sent["content"][:200]
+    # Fall back to first content[] text item
+    for item in article.get("content", []):
+        if item.get("type") in ("text", "sub_clause"):
+            v = item.get("value", "").strip()
+            if v:
+                return v[:200]
+    return ""
+
+
 def build_search_index(document_dict: dict) -> list:
     """
     Build a flat list of all searchable text entries from the document.
     Used by the FastAPI /search endpoint.
 
-    FIX (Bug 1): The old version read clause.get("text", "") which does not
-    exist in the data model — all content lives in the ordered content[] array.
-    It also iterated clause.get("sub_clauses", []) which no longer exists as a
-    separate list (sub-clauses are content[] items with type="sub_clause").
-
-    This version:
-      - Concatenates all content[] item values and latex strings into a single
-        searchable text string per clause.
-      - Extracts a meaningful snippet from the first text/sub_clause item.
-      - Sub-clauses are included in the parent clause's content text, so they
-        do not need separate index entries.
+    Supports new hierarchy (divisions->parts->sections->subsections->articles)
+    and old schema (chapters->sections->clauses) for backward compat.
 
     Returns:
-        List of dicts: [{"id": "CL-4-1-2-1", "text": "...", "breadcrumb": "..."}, ...]
+        List of dicts: [{"id": "ART-4-1-2-1", "text": "...", "breadcrumb": "..."}, ...]
     """
     index = []
 
+    # ── New schema: divisions -> parts -> sections -> subsections -> articles ──
+    for div in document_dict.get("divisions", []):
+        div_label = div.get("id", "")
+        for part in div.get("parts", []):
+            part_label = f"Part {part.get('number', '')}"
+            for section in part.get("sections", []):
+                sec_label = f"{part_label} > {section.get('number', '')}"
+                for subsec in section.get("subsections", []):
+                    sub_label = f"{sec_label} > {subsec.get('number', '')}"
+                    for article in subsec.get("articles", subsec.get("clauses", [])):
+                        art_label = f"{sub_label} > {article.get('number', '')}"
+                        text_parts = _article_text_parts(article)
+                        full_text = " ".join(text_parts)
+                        snippet = _article_snippet(article)
+                        index.append({
+                            "id":         article["id"],
+                            "type":       "article",
+                            "number":     article.get("number", ""),
+                            "title":      article.get("title", ""),
+                            "text":       full_text,
+                            "snippet":    snippet,
+                            "breadcrumb": art_label,
+                            "page":       (article.get("page_span") or [0])[0],
+                        })
+                for article in section.get("articles", section.get("clauses", [])):
+                    art_label = f"{sec_label} > {article.get('number', '')}"
+                    text_parts = _article_text_parts(article)
+                    full_text = " ".join(text_parts)
+                    snippet = _article_snippet(article)
+                    index.append({
+                        "id":         article["id"],
+                        "type":       "article",
+                        "number":     article.get("number", ""),
+                        "title":      article.get("title", ""),
+                        "text":       full_text,
+                        "snippet":    snippet,
+                        "breadcrumb": art_label,
+                        "page":       (article.get("page_span") or [0])[0],
+                    })
+
+    # ── Old schema fallback: chapters -> sections -> clauses ──────────────────
     for chapter in document_dict.get("chapters", []):
-        ch_label = f"Chapter {chapter['number']}"
-
+        ch_label = f"Chapter {chapter.get('number', '')}"
         for section in chapter.get("sections", []):
-            sec_label = f"{ch_label} > {section['number']}"
-
+            sec_label = f"{ch_label} > {section.get('number', '')}"
             for clause in section.get("clauses", []):
-                cl_label = f"{sec_label} > {clause['number']}"
-
-                # Build a single searchable text string from all content[] items.
-                # Includes text values, sub_clause values, and equation LaTeX.
+                cl_label = f"{sec_label} > {clause.get('number', '')}"
                 content_parts = []
                 for item in clause.get("content", []):
                     itype = item.get("type", "")
@@ -103,7 +205,6 @@ def build_search_index(document_dict: dict) -> list:
                         if latex:
                             content_parts.append(latex)
                     elif itype == "figure":
-                        # Include caption and alt text for figure search
                         cap = item.get("caption", "").strip()
                         alt = item.get("alt_text", "").strip()
                         if cap:
@@ -111,21 +212,16 @@ def build_search_index(document_dict: dict) -> list:
                         elif alt:
                             content_parts.append(alt[:120])
                     elif itype == "table":
-                        # value holds the caption text for table content items
                         cap = item.get("value", "").strip()
                         if cap:
                             content_parts.append(cap)
-
                 full_text = " ".join(content_parts)
-
-                # Extract a short human-readable snippet from the first text item
                 snippet = ""
                 for item in clause.get("content", []):
                     if item.get("type") in ("text", "sub_clause"):
                         snippet = item.get("value", "").strip()
                         if snippet:
                             break
-
                 index.append({
                     "id":         clause["id"],
                     "type":       "clause",

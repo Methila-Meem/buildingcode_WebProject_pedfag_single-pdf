@@ -59,27 +59,36 @@ buildingCodeWebProject/
 
 ## Data Model (Document Hierarchy)
 
-Clauses use an **ordered `content[]` array** to preserve PDF reading sequence. Sub-clauses, equations, figures, and tables are all `ContentItem` entries within `content[]` — they are **not** stored in separate top-level fields.
+Part-level content uses the full legal hierarchy. Each level is an explicit node — sentences, clauses, and subclauses are **not** flattened into a `content[]` array.
 
 ```
 Document
-  title, source_pdf, total_pages, extracted_at, _stats
-  └── Chapter  (id: CH-4, number: "4", title: "Structural Design")
-        └── Section  (id: SEC-4-1, number: "4.1", title: "Loads")
-              └── Clause  (id: CL-4-1-6-5, number: "4.1.6.5", title: "...", page_span: [int, ...])
-                    ├── content[]   — ordered list of ContentItems:
-                    │     { type: "text",       value: "..." }
-                    │     { type: "sub_clause",  marker: "(a)", value: "..." }
-                    │     { type: "equation",   latex: "..." }
-                    │     { type: "figure",     figure_id: "FIG-1", image_path: "...", caption: "..." }
-                    │     { type: "table",      table_id: "TBL-1", value: "caption text" }
-                    ├── tables[]    [{ id: "TBL-n", caption, headers[], rows[][], page, column_semantics[] }]
-                    ├── figures[]   [{ id: "FIG-n", caption, alt_text, image_key, image_path, page }]
-                    ├── equations[] [{ id: "EQ-n", latex, page }]
-                    ├── references[] [{ text, kind, target_id, resolved: bool }]
-                    └── note_refs[] [{ raw, note_ref, target_ids: [...], resolved: bool }]
-                        ↑ added dynamically by reference_linker.py — NOT in the Clause dataclass
+  title, source_pdf, total_pages, _stats
+  ├── preface   (Preface)
+  ├── divisions (Division[])
+  │     └── Division  (id: DIV-B)
+  │           └── Part  (id: PART-B-4, number: "4", title: "Structural Design")
+  │                 └── Section  (id: SEC-4-1, number: "4.1")
+  │                       └── Subsection  (id: SUBSEC-4-1-1, number: "4.1.1")
+  │                             └── Article  (id: ART-4-1-1-3, number: "4.1.1.3", title: "...")
+  │                                   ├── sentences[]
+  │                                   │     └── Sentence  (id: SENT-4-1-1-3-1, number: "4.1.1.3.(1)")
+  │                                   │           ├── content: str   — intro text before clauses
+  │                                   │           ├── clauses[]
+  │                                   │           │     └── Clause  (id: CLAUSE-4-1-1-3-1-a)
+  │                                   │           │           ├── content: str
+  │                                   │           │           └── subclauses[]
+  │                                   │           │                 └── Subclause  (id: SUBCLAUSE-...-i)
+  │                                   │           │                       └── content: str
+  │                                   │           ├── tables[], figures[], equations[], references[]
+  │                                   ├── content[]  — ContentItem list (notes/fallback only)
+  │                                   ├── tables[], figures[], equations[], references[]
+  │                                   └── note_refs[]  (added dynamically by reference_linker.py)
+  └── conversion_factors (ConversionFactors)
 ```
+
+**Notes sections** (Notes to Part N) use `Article` nodes with `content[]` (no sentence structure).
+**Appendix sections** use the same Article/Sentence/Clause/Subclause hierarchy as Parts.
 
 **`_stats` on Document (added by `reference_linker.py`):**
 ```python
@@ -412,9 +421,12 @@ Single-page **Extraction Statistics** view. No sidebar mode selector. Sidebar is
 | Section (non-numeric) | `SEC-{parent_id}-{safe_name}` | `SEC-PART-A-1-Preface` |
 | Notes Section | `SEC-NOTES-{part_id}` | `SEC-NOTES-PART-B-4` |
 | Subsection | `SUBSEC-{n}-{m}-{k}` | `SUBSEC-4-1-6` |
-| Clause (numbered) | `CL-{n}-{m}-{k}[-{j}...]` | `CL-4-1-6-5` |
-| Clause (unnumbered) | `CL-AUTO-{n}` | `CL-AUTO-1` |
-| Note Clause | `CL-NOTE-{A-safe}` | `CL-NOTE-A-4-1-1-3--1-` |
+| Article (numbered) | `ART-{n}-{m}-{k}-{j}` | `ART-4-1-1-3` |
+| Article (unnumbered) | `ART-AUTO-{n}` | `ART-AUTO-1` |
+| Note Article | `ART-NOTE-{A-safe}` | `ART-NOTE-A-4-1-1-3--1-` |
+| Sentence | `SENT-{art_safe}-{n}` | `SENT-4-1-1-3-1` |
+| Clause (lettered) | `CLAUSE-{art_safe}-{sent_n}-{letter}` | `CLAUSE-4-1-1-3-1-a` |
+| Subclause (roman) | `SUBCLAUSE-{clause_id_safe}-{roman}` | `SUBCLAUSE-4-1-1-3-1-a-i` |
 | Table | `TBL-{n}` | `TBL-4` |
 | Equation | `EQ-{n}` | `EQ-2` |
 | Figure | `FIG-{n}` | `FIG-3` |
@@ -422,11 +434,13 @@ Single-page **Extraction Statistics** view. No sidebar mode selector. Sidebar is
 | Preface Section | `PREF-SEC-{nn}` | `PREF-SEC-01` |
 | Conversion Factors Section | `CF-SEC-{nn}` | `CF-SEC-01` |
 
-Periods in clause numbers are replaced with hyphens: `4.1.6.5` → `CL-4-1-6-5`.
+Periods in article numbers are replaced with hyphens: `4.1.1.3` → `ART-4-1-1-3`.
 
-For note clause IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` → `CL-NOTE-A-4-1-1-3--1-` (double hyphen from `.(` sequence is preserved).
+For note article IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` → `ART-NOTE-A-4-1-1-3--1-`.
 
 **Notes Section uniqueness:** Because multiple Divisions each have a Part 1 (e.g. PART-A-1 and PART-B-1), the notes section id is anchored to the full part id (`SEC-NOTES-PART-A-1` vs `SEC-NOTES-PART-B-1`) to prevent collisions in `_section_index`.
+
+**Clause vs Subclause detection:** `_is_roman_numeral(s)` checks if all chars are in `{i, v, x}`. A legal marker is a **Subclause** when it is roman AND a `current_clause_node` already exists; otherwise it is a **Clause** (resets `current_clause_node` for sibling clauses).
 
 ---
 
@@ -475,11 +489,12 @@ For note clause IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` → 
 | Pages | 1906 |
 | Divisions | 3 (A, B, C) |
 | Parts | 15 |
-| Regular Sections | 102 |
-| Notes Sections | 12 (one per Part that has a "Notes to Part N" segment) |
+| Sections | 114 |
 | Subsections | 445 |
-| Regular Clauses | 2,419 |
-| Note Clauses | 699 |
+| Articles | 3,118 (includes note articles) |
+| Sentences | 5,383 |
+| Clauses (lettered) | 3,695 |
+| Subclauses (roman) | 111 |
 | Tables | 469 |
 | Figures | 212 |
 | Equations | 110 |
@@ -489,7 +504,7 @@ For note clause IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` → 
 Unresolved cross-references (~15.3%) point to other volumes in the BCBC series not in this PDF. Only 2 note refs are unresolved (genuine external appendix notes).
 
 **Parts with Notes Sections:**
-PART-A-1 (9), PART-A-2 (2), PART-A-3 (1), PART-B-1 (4), PART-B-3 (200), PART-B-4 (114), PART-B-5 (51), PART-B-6 (23), PART-B-8 (1), PART-B-9 (281), PART-B-10 (6), PART-C-2 (7) — numbers in parentheses are note clause counts.
+PART-A-1, PART-A-2, PART-A-3, PART-B-1, PART-B-3, PART-B-4, PART-B-5, PART-B-6, PART-B-8, PART-B-9, PART-B-10, PART-C-2 — note articles stored with `ART-NOTE-` prefix in `section.articles`.
 
 ---
 

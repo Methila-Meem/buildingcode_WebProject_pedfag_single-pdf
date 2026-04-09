@@ -46,24 +46,25 @@ def load_flags() -> dict:
 
 def build_clause_list(doc: dict) -> list:
     """
-    Collect all clauses from the new schema:
-        divisions -> parts -> sections -> subsections -> clauses
-    Also collects clauses attached directly to sections (fallback).
+    Collect all articles (formerly clauses) from the new schema:
+        divisions -> parts -> sections -> subsections -> articles
+    Also collects articles attached directly to sections (fallback).
     Includes appendices under each division.
+    Handles both new 'articles' key and old 'clauses' key for backward compat.
     """
-    clauses = []
+    articles = []
     for div in doc.get("divisions", []):
         for part in div.get("parts", []):
             for sec in part.get("sections", []):
                 for sub in sec.get("subsections", []):
-                    clauses.extend(sub.get("clauses", []))
-                clauses.extend(sec.get("clauses", []))
+                    articles.extend(sub.get("articles", sub.get("clauses", [])))
+                articles.extend(sec.get("articles", sec.get("clauses", [])))
         for appendix in div.get("appendices", []):
             for sec in appendix.get("sections", []):
                 for sub in sec.get("subsections", []):
-                    clauses.extend(sub.get("clauses", []))
-                clauses.extend(sec.get("clauses", []))
-    return clauses
+                    articles.extend(sub.get("articles", sub.get("clauses", [])))
+                articles.extend(sec.get("articles", sec.get("clauses", [])))
+    return articles
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,10 +111,10 @@ def main():
     c4.metric("Subsections", total_subsecs)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Clauses",   len(clause_list))
-    c2.metric("Equations", sum(len(cl.get("equations", [])) for cl in clause_list))
-    c3.metric("Figures",   sum(len(cl.get("figures",   [])) for cl in clause_list))
-    c4.metric("Tables",    sum(len(cl.get("tables",    [])) for cl in clause_list))
+    c1.metric("Articles",  len(clause_list))
+    c2.metric("Equations", sum(len(art.get("equations", [])) for art in clause_list))
+    c3.metric("Figures",   sum(len(art.get("figures",   [])) for art in clause_list))
+    c4.metric("Tables",    sum(len(art.get("tables",    [])) for art in clause_list))
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("🚩 Flagged", len(flags))
@@ -152,13 +153,13 @@ def main():
 
         unresolved = [
             {
-                "Clause":   cl.get("number"),
+                "Article":  art.get("number"),
                 "Ref Text": r.get("text"),
                 "Kind":     r.get("kind"),
                 "Target":   r.get("target_id", "—"),
             }
-            for cl in clause_list
-            for r in cl.get("references", [])
+            for art in clause_list
+            for r in art.get("references", [])
             if not r.get("resolved")
         ]
         if unresolved:
@@ -174,20 +175,22 @@ def main():
         parts = dv.get("parts", [])
         all_secs  = [s for p in parts for s in p.get("sections", [])]
         all_subs  = [sub for s in all_secs for sub in s.get("subsections", [])]
-        all_cls   = [cl for sub in all_subs for cl in sub.get("clauses", [])] + \
-                    [cl for s in all_secs for cl in s.get("clauses", [])]
+        all_arts  = (
+            [art for sub in all_subs for art in sub.get("articles", sub.get("clauses", []))] +
+            [art for s in all_secs for art in s.get("articles", s.get("clauses", []))]
+        )
         appendices = dv.get("appendices", [])
         div_rows.append({
             "Division":    f"{dv['id']} — {dv.get('title', '')}",
             "Parts":       len(parts),
             "Sections":    len(all_secs),
             "Subsections": len(all_subs),
-            "Clauses":     len(all_cls),
-            "Equations":   sum(len(cl.get("equations", [])) for cl in all_cls),
-            "Figures":     sum(len(cl.get("figures",   [])) for cl in all_cls),
-            "Tables":      sum(len(cl.get("tables",    [])) for cl in all_cls),
+            "Articles":    len(all_arts),
+            "Equations":   sum(len(art.get("equations", [])) for art in all_arts),
+            "Figures":     sum(len(art.get("figures",   [])) for art in all_arts),
+            "Tables":      sum(len(art.get("tables",    [])) for art in all_arts),
             "Appendices":  len(appendices),
-            "Flagged":     sum(1 for cl in all_cls if cl["id"] in flags),
+            "Flagged":     sum(1 for art in all_arts if art["id"] in flags),
         })
     st.dataframe(pd.DataFrame(div_rows), use_container_width=True, hide_index=True)
 
@@ -197,18 +200,20 @@ def main():
         for part in dv.get("parts", []):
             secs  = part.get("sections", [])
             subs  = [sub for s in secs for sub in s.get("subsections", [])]
-            cls   = [cl for sub in subs for cl in sub.get("clauses", [])] + \
-                    [cl for s in secs for cl in s.get("clauses", [])]
+            arts  = (
+                [art for sub in subs for art in sub.get("articles", sub.get("clauses", []))] +
+                [art for s in secs for art in s.get("articles", s.get("clauses", []))]
+            )
             part_rows.append({
                 "Division":    dv["id"],
                 "Part":        f"Part {part['number']} — {part.get('title', '')}",
                 "Sections":    len(secs),
                 "Subsections": len(subs),
-                "Clauses":     len(cls),
-                "Equations":   sum(len(cl.get("equations", [])) for cl in cls),
-                "Figures":     sum(len(cl.get("figures",   [])) for cl in cls),
-                "Tables":      sum(len(cl.get("tables",    [])) for cl in cls),
-                "Flagged":     sum(1 for cl in cls if cl["id"] in flags),
+                "Articles":    len(arts),
+                "Equations":   sum(len(art.get("equations", [])) for art in arts),
+                "Figures":     sum(len(art.get("figures",   [])) for art in arts),
+                "Tables":      sum(len(art.get("tables",    [])) for art in arts),
+                "Flagged":     sum(1 for art in arts if art["id"] in flags),
             })
     st.dataframe(pd.DataFrame(part_rows), use_container_width=True, hide_index=True)
 
