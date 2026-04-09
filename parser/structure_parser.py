@@ -246,6 +246,13 @@ RE_SUBCLAUSE = re.compile(r'^\s*(\([a-z]+\)|[a-z]\)|[ivxlcdm]+\.)\s+(.+)', re.IG
 # Figure caption number extraction
 RE_FIGURE_NUM = re.compile(r'Figure\s+([\d\.]+[\w\.\-]*)', re.IGNORECASE)
 
+# Notes to Part heading and note clause number
+RE_NOTES_PART = re.compile(r'^Notes\s+to\s+Part\s*(\d+)\s*(.*)', re.IGNORECASE)
+RE_NOTE_CLAUSE = re.compile(
+    r'^(A-(?:Table\s+)?[\d]+(?:\.[\d]+)*\.?(?:\(\d+\))?\.?)\s+(.*)',
+    re.DOTALL | re.IGNORECASE
+)
+
 
 # =============================================================================
 # HTML helpers  (unchanged from previous version)
@@ -612,6 +619,7 @@ class StructureParser:
         self._clause_index    = {}   # clause_id -> Clause
         self._subsec_index    = {}   # subsec_id -> Subsection
         self._section_index   = {}   # sec_id    -> Section
+        self._notes_section_index = {}   # "SEC-NOTES-{part_id}" -> Section
 
     def parse(self, datalab_result: dict) -> Document:
         self._images_dict  = datalab_result.get("images") or {}
@@ -827,6 +835,8 @@ class StructureParser:
         current_pref_sec: Optional[PrefaceSection]         = None
         current_pref_subsec: Optional[PrefaceSubsection]   = None
         current_cf_sec:   Optional[ConversionFactorsSection] = None
+        current_notes_section: Optional[Section] = None
+        current_note_clause:   Optional[Clause]  = None
 
         pending_caption: str = ""
 
@@ -983,6 +993,8 @@ class StructureParser:
                         current_subsection = None
                         current_clause     = None
                         current_appendix   = None
+                        current_notes_section = None
+                        current_note_clause   = None
 
                     elif div_desc and (mode == "preface" or has_hr):
                         # Descriptive Division heading → Preface subsection reference
@@ -1054,11 +1066,51 @@ class StructureParser:
                         current_section    = None
                         current_subsection = None
                         current_clause     = None
+                        current_notes_section = None
+                        current_note_clause   = None
                         continue
 
                 # =================================================================
                 # Mode-specific heading handling
                 # =================================================================
+
+                # ── Priority 5: Notes to Part N heading ──────────────────────
+                if has_hr and mode in ("normal", "init") and current_division:
+                    m_notes = RE_NOTES_PART.match(clean)
+                    if m_notes:
+                        part_num = m_notes.group(1)
+                        notes_title_suffix = m_notes.group(2).strip()
+                        target_part = current_part
+                        if target_part is None or target_part.number != part_num:
+                            target_part = next(
+                                (p for p in current_division.parts
+                                 if p.number == part_num),
+                                current_part
+                            )
+                        if target_part:
+                            notes_sec_id = f"SEC-NOTES-{target_part.id}"
+                            part_title_text = notes_title_suffix or target_part.title
+                            notes_title = (
+                                f"Notes to Part {part_num} {part_title_text}".strip()
+                            )
+                            existing_notes = self._notes_section_index.get(notes_sec_id)
+                            if existing_notes is None:
+                                existing_notes = Section(
+                                    id=notes_sec_id, number="",
+                                    title=notes_title, page_span=[page]
+                                )
+                                target_part.sections.append(existing_notes)
+                                self._section_index[notes_sec_id] = existing_notes
+                                self._notes_section_index[notes_sec_id] = existing_notes
+                            else:
+                                if page not in existing_notes.page_span:
+                                    existing_notes.page_span.append(page)
+                            current_notes_section = existing_notes
+                            current_note_clause   = None
+                            current_clause        = None
+                            current_subsection    = None
+                            current_section       = current_notes_section
+                        continue
 
                 # ── PREFACE mode ──────────────────────────────────────────────
                 if mode == "preface":
@@ -1143,6 +1195,34 @@ class StructureParser:
                     current_subsection = None
                     current_clause     = None
                     current_appendix   = None
+                    current_notes_section = None
+                    current_note_clause   = None
+
+                elif current_notes_section is not None:
+                    # ── Notes mode: route all non-Part headings here ──────────
+                    m_note_hdr = RE_NOTE_CLAUSE.match(clean)
+                    if m_note_hdr:
+                        note_num = m_note_hdr.group(1)
+                        rest     = m_note_hdr.group(2).strip()
+                        dot_m    = re.search(r'\.\s', rest)
+                        if dot_m:
+                            note_title = rest[:dot_m.start()].strip()
+                        else:
+                            note_title = rest.rstrip('.').strip()
+                        current_note_clause = self._make_note_clause(
+                            note_num, note_title, page, current_notes_section
+                        )
+                        current_clause = current_note_clause
+                        if page not in current_notes_section.page_span:
+                            current_notes_section.page_span.append(page)
+                    else:
+                        # Sub-heading within a note clause
+                        if current_note_clause:
+                            current_note_clause.content.append(
+                                ContentItem(type="text", value=f"**{clean}**")
+                            )
+                            if page not in current_note_clause.page_span:
+                                current_note_clause.page_span.append(page)
 
                 elif m4 and (current_subsection or current_section):
                     # 4-number → Clause
@@ -1225,6 +1305,47 @@ class StructureParser:
 
                 if mode not in ("normal", "appendix", "init"):
                     add_text(text, page, has_inline_math)
+
+                elif current_notes_section is not None:
+                    # ── Notes mode text: detect new note clauses ──────────────
+                    m_note = RE_NOTE_CLAUSE.match(check_line)
+                    if m_note:
+                        note_num      = m_note.group(1)
+                        rest_of_line  = m_note.group(2).strip()
+                        dot_m         = re.search(r'\.\s', rest_of_line)
+                        if dot_m:
+                            note_title       = rest_of_line[:dot_m.start()].strip()
+                            first_line_tail  = rest_of_line[dot_m.end():]
+                        else:
+                            note_title      = rest_of_line.rstrip('.').strip()
+                            first_line_tail = ""
+                        current_note_clause = self._make_note_clause(
+                            note_num, note_title, page, current_notes_section
+                        )
+                        current_clause = current_note_clause
+                        if page not in current_notes_section.page_span:
+                            current_notes_section.page_span.append(page)
+                        # Attach remaining content from this block
+                        remaining = text.splitlines()[1:] if len(text.splitlines()) > 1 else []
+                        full_tail  = first_line_tail
+                        if remaining:
+                            full_tail = (full_tail + " " + " ".join(remaining)).strip()
+                        if full_tail:
+                            _attach_text_to_content(
+                                current_note_clause, full_tail, page, has_inline_math
+                            )
+                    else:
+                        # Continuation text → attach to current note clause
+                        target = current_note_clause
+                        if target is None:
+                            target = self._make_note_clause(
+                                "", "General Notes", page, current_notes_section
+                            )
+                            current_note_clause = target
+                            current_clause      = target
+                        _attach_text_to_content(
+                            target, text, page, has_inline_math
+                        )
 
                 elif m4 and (current_subsection or current_section):
                     num = m4.group(1)
@@ -1634,6 +1755,29 @@ class StructureParser:
             return f"CL-{number.replace('.', '-')}"
         self._auto_clause_counter += 1
         return f"CL-AUTO-{self._auto_clause_counter}"
+
+    def _note_clause_id_for(self, note_number: str) -> str:
+        """Generate a stable ID for a note clause from its A-... number."""
+        if not note_number:
+            self._auto_clause_counter += 1
+            return f"CL-NOTE-AUTO-{self._auto_clause_counter}"
+        safe = note_number.replace('.', '-').replace('(', '-').replace(')', '-')
+        return f"CL-NOTE-{safe}"
+
+    def _make_note_clause(self, note_number: str, title: str,
+                          page: int, notes_section: Section) -> Clause:
+        """Create (or return existing) Clause for a note entry."""
+        cl_id = self._note_clause_id_for(note_number)
+        existing = self._clause_index.get(cl_id)
+        if existing:
+            if page not in existing.page_span:
+                existing.page_span.append(page)
+            return existing
+        cl = Clause(id=cl_id, number=note_number, title=title,
+                    page_span=[page])
+        notes_section.clauses.append(cl)
+        self._clause_index[cl_id] = cl
+        return cl
 
     # -------------------------------------------------------------------------
     # Post-processing

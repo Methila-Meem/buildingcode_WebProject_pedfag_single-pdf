@@ -226,13 +226,24 @@ def build_note_index(document_dict: dict) -> dict:
 
     def _process_clause_for_notes(clause):
         cid = clause.get("id", "")
-        if not cid.startswith("CL-AUTO"):
+        if not (cid.startswith("CL-AUTO") or cid.startswith("CL-NOTE")):
             return
         title = clause.get("title", "")
         # Pass 1: index the clause title
-        if title.startswith("A-"):
-            m = RE_A_TITLE.match(title)
-            if m:
+        if title.startswith("A-") or cid.startswith("CL-NOTE"):
+            m = RE_A_TITLE.match(title) if title.startswith("A-") else None
+            # For CL-NOTE clauses, use the number field directly
+            if m is None and cid.startswith("CL-NOTE"):
+                num = clause.get("number", "")
+                if num.startswith("A-"):
+                    m_num = RE_A_TITLE.match(num)
+                    if m_num:
+                        key = m_num.group(1).strip().rstrip('.')
+                        base = re.sub(r'\.\(\d+\).*$', '', key)
+                        for k in {key, base}:
+                            if cid not in note_idx.get(k, []):
+                                note_idx.setdefault(k, []).append(cid)
+            elif m:
                 key = m.group(1).strip().rstrip('.')
                 if cid not in note_idx.get(key, []):
                     note_idx.setdefault(key, []).append(cid)
