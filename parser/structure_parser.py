@@ -712,8 +712,18 @@ def parse_table_caption(raw: str) -> dict:
         result["title"] = raw
         return result
 
-    table_number     = m.group(1).rstrip('.')
+    table_number_raw = m.group(1)
     rest             = m.group(2).strip()
+
+    # Preserve trailing dot when present in the source text.
+    # _RE_CAP_NUM does not capture the trailing dot — it ends up at the start of rest.
+    # Example: "Table 4.1.5.3. Specified..." → group(1)="4.1.5.3", rest=". Specified..."
+    trailing_dot = ""
+    if rest.startswith("."):
+        trailing_dot = "."
+        rest = rest[1:].strip()   # strip the leading dot and any following whitespace
+
+    table_number = table_number_raw.rstrip('.') + trailing_dot
     result["table_number"] = table_number
     result["table_label"]  = f"Table {table_number}"
 
@@ -851,6 +861,106 @@ def _enrich_tables_in_dict(doc_dict: dict) -> None:
         if isinstance(node, dict):
             for tbl in node.get("tables", []):
                 _enrich_one(tbl)
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(doc_dict)
+
+
+# =============================================================================
+# Figure caption parsing and enrichment
+# =============================================================================
+
+# Parses captions like:
+#   "Figure 4.1.6.5.-A"                 → figure_number="4.1.6.5.-A", title=""
+#   "Figure A-1.4.1.2.(1)-A Flight"     → figure_number="A-1.4.1.2.(1)-A", title="Flight"
+#   "Figure A-1.1.1.1.(6)"              → figure_number="A-1.1.1.1.(6)", title=""
+#   "Figure A-3.9.2.1.(1) Description"  → figure_number="A-3.9.2.1.(1)", title="Description"
+#
+# Note: [\d\.]+ is greedy and consumes trailing dots (e.g. "3.9.2.1."), so the
+# sentence paren group immediately follows without a leading dot.
+_RE_FIG_CAP_PARSE = re.compile(
+    r'^Figure\s+'
+    r'((?:Table\s+)?'           # optional "Table " for captions like "Figure Table A-9.23..."
+    r'(?:[A-Za-z]-)?'           # optional letter prefix e.g. "A-"
+    r'[\d\.]+(?:\([^)]+\))?'   # digits/dots + optional paren group e.g. "(1)"
+    r'(?:[.\-][A-Za-z]+)*)'    # optional letter suffix(es) e.g. ".-A" or "-A"
+    r'\s*(.*)',
+    re.IGNORECASE | re.DOTALL
+)
+
+
+def _parse_figure_caption(raw_cap: str) -> dict:
+    """
+    Parse a raw figure caption string into a structured metadata dict.
+
+    Examples::
+        "Figure 4.1.6.5.-A"
+        -> {"raw": "Figure 4.1.6.5.-A", "figure_label": "Figure 4.1.6.5.-A",
+            "figure_number": "4.1.6.5.-A", "title": ""}
+
+        "Figure A-1.4.1.2.(1)-A Flight"
+        -> {"raw": "...", "figure_label": "Figure A-1.4.1.2.(1)-A",
+            "figure_number": "A-1.4.1.2.(1)-A", "title": "Flight"}
+    """
+    raw_cap = (raw_cap or "").strip()
+    result: dict = {
+        "raw":          raw_cap,
+        "figure_label": raw_cap,
+        "figure_number": "",
+        "title":        "",
+    }
+    m = _RE_FIG_CAP_PARSE.match(raw_cap)
+    if m:
+        figure_number = m.group(1).strip()
+        title         = m.group(2).strip()
+        result["figure_number"] = figure_number
+        result["figure_label"]  = f"Figure {figure_number}"
+        result["title"]         = title
+    return result
+
+
+def _enrich_figures_in_dict(doc_dict: dict) -> None:
+    """
+    Post-process the serialized document dict in-place to enrich all figure
+    objects with:
+    - structured caption (raw, figure_label, figure_number, title)
+    - reference_key: canonical matching key for hyperlink resolution
+    - page_span: list of pages (added if missing)
+
+    This runs AFTER asdict() so the internal parse/merge logic is unaffected.
+    Only operates on figures whose caption is still a plain string (idempotent).
+    """
+    def _enrich_one(fig: dict) -> None:
+        raw_cap = fig.get("caption", "")
+
+        # Guard: skip figures already enriched by a previous run
+        if isinstance(raw_cap, dict):
+            return
+
+        # Structured caption
+        fig["caption"] = _parse_figure_caption(raw_cap)
+
+        # reference_key: canonical key used for hyperlink resolution
+        cap_dict = fig["caption"]
+        if cap_dict["figure_label"]:
+            fig["reference_key"] = cap_dict["figure_label"]
+        elif raw_cap:
+            fig["reference_key"] = raw_cap
+        else:
+            fig["reference_key"] = ""
+
+        # page_span: add if missing
+        if "page_span" not in fig or not fig.get("page_span"):
+            fig["page_span"] = [fig.get("page", 0)]
+
+    def _walk(node) -> None:
+        if isinstance(node, dict):
+            for fig in node.get("figures", []):
+                _enrich_one(fig)
             for v in node.values():
                 _walk(v)
         elif isinstance(node, list):
@@ -2365,6 +2475,7 @@ class StructureParser:
     def to_dict(self, document: Document) -> dict:
         doc_dict = asdict(document)
         _enrich_tables_in_dict(doc_dict)
+        _enrich_figures_in_dict(doc_dict)
         return doc_dict
 
 

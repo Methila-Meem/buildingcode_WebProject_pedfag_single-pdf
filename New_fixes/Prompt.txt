@@ -1,255 +1,268 @@
-Refactor my table schema and parser so table captions and table row/cell text automatically extract structured reference links.
+Fix the remaining reference and figure-linking issues in my production parser/output.
 
 FILES
 - @parser\structure_parser.py
 - @storage\output\structured_document.json
 - @bcbc_2024_web_version_revision2.pdf
-- bcbc_2024_web_version_revision2.pdf
 
 MAIN GOAL
-Improve the "tables": [] schema so table captions and table row/cell text contain structured parsed references instead of only flat strings.
+Update the parser and regenerated JSON so these three issues are fixed everywhere in the full document.
 
-CURRENT ISSUE
-Right now tables look like this:
-- caption is a single raw string
-- rows are arrays of plain strings
-- references inside caption and cells are not explicitly extracted
+==================================================
+ISSUE 1 — WRONG target_id PREFIX FOR SUBSECTIONS
+==================================================
 
-Examples from current data:
-- caption:
-  "Table 1.1.1.1.(5) Alternate Compliance Methods for Heritage Buildings Forming Part of Sentence 1.1.1.1.(5)"
-- row cell references:
-  "Sentence 3.1.3.1.(1), Table 3.1.3.1., Subsection 9.10.9."
-  "Subsection 3.1.5., Article 9.10.6.1."
-
-These must be parsed into structured linkable metadata. :contentReference[oaicite:0]{index=0}
-
-REQUIRED TABLE SCHEMA
-Change each table object to a richer structure like this:
-
+Current bad example:
 {
-  "id": "TBL-2",
+  "text": "Subsection 3.7.2.",
+  "kind": "Subsection",
+  "number": "3.7.2",
+  "target_id": "SEC-3-7-2",
+  "resolved": false
+}
+
+Expected:
+{
+  "text": "Subsection 3.7.2.",
+  "kind": "Subsection",
+  "number": "3.7.2",
+  "target_id": "SUBSEC-3-7-2",
+  "resolved": true
+}
+
+RULE:
+- Any reference with "kind": "Subsection" must resolve to a SUBSEC-* id, never SEC-*.
+- Claude must check all extracted references globally and fix every subsection mismatch.
+- If the referenced subsection exists in the document hierarchy, set:
+  - target_id = SUBSEC-x-x-x
+  - resolved = true
+- If it truly does not exist, keep:
+  - target_id = ""
+  - resolved = false
+- Never assign SEC-* to a Subsection reference.
+
+This must apply everywhere:
+- table references
+- clause references
+- sentence references
+- article references
+- note references
+- any parsed reference object
+
+==================================================
+ISSUE 2 — TABLE CAPTION PARSING FORMAT BUG
+==================================================
+
+Current bad example:
+{
+  "id": "TBL-208",
   "caption": {
-    "raw": "Table 1.1.1.1.(5) Alternate Compliance Methods for Heritage Buildings Forming Part of Sentence 1.1.1.1.(5)",
-    "table_number": "1.1.1.1.(5)",
-    "table_label": "Table 1.1.1.1.(5)",
-    "title": "Alternate Compliance Methods for Heritage Buildings",
+    "raw": "Table 4.1.5.3. Specified Uniformly Distributed Live Loads on an Area of Floor or Roof Forming Part of Sentence 4.1.5.3.(1)",
+    "table_number": "4.1.5.3",
+    "table_label": "Table 4.1.5.3",
+    "title": ". Specified Uniformly Distributed Live Loads on an Area of Floor or Roof",
     "forming_part_of": {
       "kind": "Sentence",
-      "raw": "Sentence 1.1.1.1.(5)",
-      "number": "1.1.1.1.(5)",
-      "target_id": "SENT-1-1-1-1-5",
+      "raw": "Sentence 4.1.5.3.(1)",
+      "number": "4.1.5.3.(1)",
+      "target_id": "SENT-4-1-5-3-1",
       "resolved": true
     }
-  },
-  "headers": [
-    { "index": 0, "text": "No." },
-    { "index": 1, "text": "Code Requirement in Division B" },
-    { "index": 2, "text": "Alternate Compliance Method" }
-  ],
-  "rows": [
-    {
-      "row_id": "TBL-2-R1",
-      "cells": [
-        {
-          "col_index": 0,
-          "header": "No.",
-          "raw": "1",
-          "value": "1",
-          "references": []
-        },
-        {
-          "col_index": 1,
-          "header": "Code Requirement in Division B",
-          "raw": "Sentence 3.1.3.1.(1), Table 3.1.3.1., Subsection 9.10.9. ...",
-          "value": "Sentence 3.1.3.1.(1), Table 3.1.3.1., Subsection 9.10.9. ...",
-          "references": [
-            {
-              "text": "Sentence 3.1.3.1.(1)",
-              "kind": "Sentence",
-              "number": "3.1.3.1.(1)",
-              "target_id": "SENT-3-1-3-1-1",
-              "resolved": true
-            },
-            {
-              "text": "Table 3.1.3.1.",
-              "kind": "Table",
-              "number": "3.1.3.1",
-              "target_id": "TBL-3-1-3-1",
-              "resolved": true
-            },
-            {
-              "text": "Subsection 9.10.9.",
-              "kind": "Subsection",
-              "number": "9.10.9",
-              "target_id": "SUBSEC-9-10-9",
-              "resolved": true
-            }
-          ]
-        },
-        {
-          "col_index": 2,
-          "header": "Alternate Compliance Method",
-          "raw": "Except for F1 occupancies...",
-          "value": "Except for F1 occupancies...",
-          "references": []
-        }
-      ],
-      "page_span": [32]
-    }
-  ],
-  "references": [
-    {
-      "text": "Sentence 1.1.1.1.(5)",
-      "kind": "Sentence",
-      "number": "1.1.1.1.(5)",
-      "target_id": "SENT-1-1-1-1-5",
-      "resolved": true,
-      "source": "caption"
-    }
-  ],
-  "page_span": [32]
+  }
 }
 
-REQUIRED BEHAVIOR
-
-1. CAPTION PARSING
-Parse caption into:
-- raw
-- table_number
-- table_label
-- title
-- forming_part_of
-
-Example:
-"Table 1.1.1.1.(5) Alternate Compliance Methods for Heritage Buildings Forming Part of Sentence 1.1.1.1.(5)"
-
-should become:
-- table_number = 1.1.1.1.(5)
-- table_label = Table 1.1.1.1.(5)
-- title = Alternate Compliance Methods for Heritage Buildings
-- forming_part_of.kind = Sentence
-- forming_part_of.number = 1.1.1.1.(5)
-
-2. HEADER STRUCTURE
-Instead of only string headers, use structured headers:
-- index
-- text
-
-3. ROW STRUCTURE
-Instead of rows being array-of-arrays only, convert each row into:
-- row_id
-- cells[]
-
-4. CELL STRUCTURE
-Each cell must include:
-- col_index
-- header
-- raw
-- value
-- references[]
-
-5. REFERENCE EXTRACTION
-Extract references from:
-- caption
-- each row cell
-
-Support these kinds:
-- Part
-- Section
-- Subsection
-- Article
-- Sentence
-- Clause
-- Subclause
-- Table
-- Figure
-- Appendix
-- Note
-
-Each extracted reference should use:
+Expected:
 {
-  "text": "...",
-  "kind": "...",
-  "number": "...",
-  "target_id": "...",
-  "resolved": true/false
+  "id": "TBL-208",
+  "caption": {
+    "raw": "Table 4.1.5.3. Specified Uniformly Distributed Live Loads on an Area of Floor or Roof Forming Part of Sentence 4.1.5.3.(1)",
+    "table_number": "4.1.5.3.",
+    "table_label": "Table 4.1.5.3.",
+    "title": "Specified Uniformly Distributed Live Loads on an Area of Floor or Roof",
+    "forming_part_of": {
+      "kind": "Sentence",
+      "raw": "Sentence 4.1.5.3.(1)",
+      "number": "4.1.5.3.(1)",
+      "target_id": "SENT-4-1-5-3-1",
+      "resolved": true
+    }
+  }
 }
 
-6. TABLE-LEVEL REFERENCES
-Add deduplicated table.references[] containing all unique extracted references from:
-- caption
-- cells
+RULES:
+- table_number must preserve the trailing full stop when present in the source:
+  - "4.1.5.3."
+- table_label must also preserve it:
+  - "Table 4.1.5.3."
+- title must NOT start with a leading "."
+- caption parsing must correctly split:
+  1. table label
+  2. title
+  3. forming_part_of reference
+- Apply this fix for all tables in the full document.
 
-Optionally include:
-- source = "caption"
-- source = "cell"
+==================================================
+ISSUE 3 — FIGURE LINKING SCHEMA IS TOO WEAK
+==================================================
 
-7. TARGET ID RESOLUTION
-Resolve extracted references against the actual structured document IDs where possible.
+Current figure example:
+{
+  "id": "FIG-55",
+  "caption": "Figure 4.1.6.5.-A",
+  "alt_text": "...",
+  "image_key": "...",
+  "image_path": "...",
+  "page": 530
+}
 
-Examples:
-- Sentence 3.1.3.1.(1) -> SENT-3-1-3-1-1
-- Subsection 9.10.9. -> SUBSEC-9-10-9
-- Article 9.10.6.1. -> ART-9-10-6-1
-- Table 3.1.3.1. -> matching table id if present
+Current reference example:
+{
+  "text": "Figure 4.1.6.5.-A",
+  "kind": "Figure",
+  "number": "4.1.6.5.-A",
+  "target_id": "FIG-55",
+  "resolved": true,
+  "source": "caption"
+}
 
-If not found:
-- keep the parsed number
-- set resolved = false
-- target_id = ""
+Problem:
+- The system is confusing figure text/number matching, so hyperlinking often fails.
+- Figure id alone is not enough.
+- Figure caption string is not normalized enough for reliable matching.
 
-8. KEEP EXISTING TABLE DATA
-Preserve:
-- existing id
-- page/page_span
-- row values
-- captions
-- headers
-- content meaning
+REQUIRED SOLUTION
+Refactor figure schema so figures have explicit parsed identifier metadata, similar to tables.
 
-This is a schema enrichment, not a destructive rewrite.
+Use a schema like this:
 
-PARSER TASKS
-Update structure_parser.py to:
-1. refactor table schema
-2. add caption parser
-3. add cell reference extractor
-4. add reference resolver
-5. regenerate structured_document.json
-6. replace old structured_document.json
+{
+  "id": "FIG-55",
+  "caption": {
+    "raw": "Figure 4.1.6.5.-A",
+    "figure_label": "Figure 4.1.6.5.-A",
+    "figure_number": "4.1.6.5.-A",
+    "title": ""
+  },
+  "alt_text": "...",
+  "image_key": "...",
+  "image_path": "...",
+  "page": 530,
+  "page_span": [530],
+  "reference_key": "Figure 4.1.6.5.-A"
+}
 
-REFERENCE PATTERNS TO DETECT
-At minimum detect:
-- Section 3.4.
-- Subsection 3.1.5.
-- Article 9.10.6.1.
-- Sentence 3.1.3.1.(1)
-- Clause 9.10.19.5.(2)(a)
-- Subclause 3.5.2.1.(2)(a)(i)
-- Table 3.1.3.1.
-- Table 3.2.3.1.A
-- Appendix D
-- Note A-1.1.1.1.(5)
+REFERENCE RULES FOR FIGURES
+- Every figure must have:
+  - caption.raw
+  - caption.figure_label
+  - caption.figure_number
+  - reference_key
+- reference_key should be the canonical matching key used for hyperlink resolution.
+- Reference objects pointing to figures should match primarily against:
+  1. figure.reference_key
+  2. figure.caption.figure_label
+  3. figure.caption.figure_number
 
-VALIDATION
+Reference example:
+{
+  "text": "Figure 4.1.6.5.-A",
+  "kind": "Figure",
+  "number": "4.1.6.5.-A",
+  "lookup_key": "Figure 4.1.6.5.-A",
+  "target_id": "FIG-55",
+  "resolved": true,
+  "source": "caption"
+}
+
+FIGURE MATCHING RULES
+- Normalize figure matching consistently.
+- Preserve suffixes like "-A", "-B"
+- Do not confuse:
+  - Figure 4.1.6.5.-A
+  - Table 4.1.6.5.-A
+- Figure references must only resolve against figures.
+- Table references must only resolve against tables.
+- Matching must be exact after normalization.
+
+RECOMMENDED NORMALIZATION
+Create canonical keys for tables and figures:
+- Table canonical key:
+  "Table 4.1.5.3."
+- Figure canonical key:
+  "Figure 4.1.6.5.-A"
+
+Use canonical keys during resolution rather than fuzzy caption matching.
+
+==================================================
+IMPLEMENTATION TASKS
+==================================================
+
+Update structure_parser.py so it does all of the following:
+
+1. GLOBAL SUBSECTION REFERENCE FIX
+- audit all reference resolution logic
+- ensure "kind": "Subsection" maps only to SUBSEC-* ids
+- never generate SEC-* target ids for subsection references
+
+2. TABLE CAPTION PARSER FIX
+- preserve trailing dot in table_number and table_label
+- strip accidental leading punctuation from title
+- correctly parse "Forming Part of Sentence ..."
+
+3. FIGURE SCHEMA REFACTOR
+- change figures from flat caption string to structured caption object
+- add figure_label
+- add figure_number
+- add reference_key
+- improve figure reference matching and resolution
+
+4. REGENERATION
+- regenerate structured_document.json
+- replace the old structured_document.json
+
+==================================================
+VALIDATION CHECKS
+==================================================
+
 After regeneration verify:
-- all tables still exist
-- captions are parsed into structured objects
-- rows are structured with row_id and cells
-- references are extracted from caption and cells
-- resolved links work where targets exist
-- unresolved references are preserved cleanly
-- structured_document.json remains valid JSON
 
+A. Subsection references
+- no Subsection reference points to SEC-*
+- valid subsection refs point to SUBSEC-*
+- subsection resolved flags are correct
+
+B. Tables
+- table_number preserves trailing period when present
+- table_label preserves trailing period when present
+- title does not begin with "."
+- forming_part_of remains correct
+
+C. Figures
+- figures use structured caption object
+- figure references resolve using canonical keys
+- Figure refs do not collide with Table refs
+- hyperlinking for figures can use exact figure match text like:
+  "Figure 4.1.6.5.-A"
+
+D. Output integrity
+- structured_document.json remains valid
+- existing data is preserved as much as possible
+- top-level schema remains unchanged
+
+==================================================
 DELIVERABLES
+==================================================
+
 1. updated structure_parser.py
 2. updated structured_document.json
 
+==================================================
 FINAL REPORT
-Briefly report:
-- how the table schema changed
-- how caption parsing works
-- how cell-level references are extracted
-- how many references were resolved vs unresolved
+==================================================
+
+At the end, report briefly:
+- how subsection target_id resolution was fixed
+- how table caption parsing was fixed
+- what figure schema was introduced
 - whether structured_document.json was replaced successfully
+- any ambiguous unresolved references that may still need manual review

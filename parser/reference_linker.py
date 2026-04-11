@@ -170,14 +170,31 @@ def _index_clause_assets(clause: dict, index: dict):
         cap = table.get("caption", "")
         # Handle both legacy string captions and new structured dict captions
         if isinstance(cap, dict):
-            cap = cap.get("raw", "")
-        if cap:
+            raw = cap.get("raw", "")
+            if raw:
+                index[f"_cap_{raw}"] = table
+            # Also index by canonical table_label for exact matching
+            tbl_label = cap.get("table_label", "")
+            if tbl_label and tbl_label != raw:
+                index[f"_cap_{tbl_label}"] = table
+        elif cap:
             index[f"_cap_{cap}"] = table
     for figure in clause.get("figures", []):
         index[figure["id"]] = figure
-        cap = figure.get("caption", "")
-        if cap:
-            index[f"_cap_{cap}"] = figure
+        # Use reference_key for canonical matching (set by _enrich_figures_in_dict)
+        ref_key = figure.get("reference_key", "")
+        if ref_key:
+            index[f"_cap_{ref_key}"] = figure
+        else:
+            # Fallback: handle both flat string and structured dict captions
+            cap = figure.get("caption", "")
+            if isinstance(cap, dict):
+                fig_label = cap.get("figure_label", "")
+                cap_raw = cap.get("raw", "")
+                for k in filter(None, {fig_label, cap_raw}):
+                    index[f"_cap_{k}"] = figure
+            elif cap:
+                index[f"_cap_{cap}"] = figure
 
 
 _RE_4PART_TITLE = re.compile(r'^(\d+\.\d+\.\d+\.\d+)')
@@ -383,7 +400,24 @@ def _ref_to_id(ref: str, kind: str, id_index: dict,
             return art_target
         return target if target in id_index else art_target
 
-    if kind_lower in ("subsection", "section"):
+    if kind_lower == "subsection":
+        # Subsection always maps to SUBSEC-* (never SEC-*)
+        target = f"SUBSEC-{normalized}"
+        if target in id_index:
+            return target
+        # Fallbacks: some 3-part headings may have been parsed as Section, Article, or Clause
+        sec_target = f"SEC-{normalized}"
+        if sec_target in id_index:
+            return sec_target
+        art_target = f"ART-{normalized}"
+        if art_target in id_index:
+            return art_target
+        cl_target = f"CL-{normalized}"
+        if cl_target in id_index:
+            return cl_target
+        return target  # return SUBSEC- even if not found (consistent prefix)
+
+    if kind_lower == "section":
         target = f"SEC-{normalized}"
         # Fix 5: if SEC- not found, try matching as an Article (ART-) or Clause (CL-)
         if target not in id_index:
@@ -400,9 +434,9 @@ def _ref_to_id(ref: str, kind: str, id_index: dict,
         for key, node in id_index.items():
             if not key.startswith("_cap_"):
                 continue
-            # Extract the table number from the caption key for comparison.
-            # Caption keys look like: "_cap_Table 4.1.3.2.-A Load Combinations..."
-            # We want to match only the identifier part, not the full caption text.
+            # Only match table nodes (TBL- prefix) to avoid collision with figure caps
+            if not node.get("id", "").startswith("TBL-"):
+                continue
             cap_body = key[len("_cap_"):]
             cap_m    = re.match(r'(?:Table\s+)?([\d\.]+[\w\.\-]*)', cap_body, re.IGNORECASE)
             if cap_m and _normalize_ref(cap_m.group(1)) == ref_norm:
@@ -411,8 +445,17 @@ def _ref_to_id(ref: str, kind: str, id_index: dict,
 
     if kind_lower == "figure":
         ref_norm = _normalize_ref(ref_clean)
+        # Try exact canonical key first: reference_key = "Figure {number}"
+        exact_cap_key = f"_cap_Figure {ref_clean}"
+        if exact_cap_key in id_index:
+            node = id_index[exact_cap_key]
+            if node.get("id", "").startswith("FIG-"):
+                return node["id"]
+        # Fuzzy fallback: only match FIG- nodes to avoid collision with table caps
         for key, node in id_index.items():
             if not key.startswith("_cap_"):
+                continue
+            if not node.get("id", "").startswith("FIG-"):
                 continue
             cap_body = key[len("_cap_"):]
             cap_m    = re.match(r'(?:Figure\s+)?([\d\.]+[\w\.\-]*)', cap_body, re.IGNORECASE)
@@ -627,12 +670,17 @@ def link_references(document_dict: dict) -> dict:
                 is_resolved = bool(target_id and target_id in id_index)
                 if is_resolved:
                     resolved_refs += 1
-                linked.append({
+                ref_entry = {
                     "text":      det["raw"],
                     "kind":      det["kind"],
+                    "number":    det["ref"],
                     "target_id": target_id,
                     "resolved":  is_resolved,
-                })
+                }
+                # Add lookup_key for Figure references (canonical matching key)
+                if det["kind"].lower() == "figure":
+                    ref_entry["lookup_key"] = f"Figure {det['ref']}"
+                linked.append(ref_entry)
         clause["references"] = linked
 
         # ── Note references ───────────────────────────────────────────────

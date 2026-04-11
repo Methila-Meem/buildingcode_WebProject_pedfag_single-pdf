@@ -94,14 +94,14 @@ Document
 ```python
 {
     "total_references": 2945,
-    "resolved_references": 2495,
-    "resolution_rate_pct": 84.7,
+    "resolved_references": 2867,
+    "resolution_rate_pct": 97.4,
     "total_note_refs": 922,
     "resolved_note_refs": 920,
     "note_resolution_rate_pct": 99.8,
 }
 ```
-Unresolved references (~15.3%) are expected — they point to other PDFs in the BCBC series (external volumes). Unresolved note refs (0.2%) are genuine external appendix notes not in this PDF.
+Unresolved references (~2.6%) are expected — they point to other PDFs in the BCBC series (external volumes). Unresolved note refs (0.2%) are genuine external appendix notes not in this PDF.
 
 ---
 
@@ -308,9 +308,11 @@ Creates a `StructureParser`, calls `parse()`, then `to_dict()` → returns JSON-
 
 **Standard cross-references** → `clause.references[]`:
 - Kinds: `Sentence`, `Article`, `Subsection`, `Section`, `Clause`, `Table`, `Figure`
-- `Subsection`/`Section` maps to `SEC-...` first; if not in id_index, falls back to `CL-...` (handles cases where the parser created a Clause for a 3-part heading instead of a Section)
+- `Subsection` kind maps to `SUBSEC-...` first; if not in id_index falls back to `SEC-...`, then `ART-...`, then `CL-...` — **never generates `SEC-*` as the primary target for a Subsection reference**
+- `Section` kind maps to `SEC-...` first; if not in id_index, falls back to `ART-...` then `CL-...`
 - Sentence/Article/Clause maps to `CL-...`; if not in id_index, falls back via `title_num_index` to the actual `CL-AUTO-N` id for clauses whose number is only in their title
-- Table/Figure: normalized caption lookup first (strips dots/hyphens), then fallback ID
+- Table: type-guarded lookup — only resolves against `TBL-*` nodes; normalized caption match, then fallback ID
+- Figure: type-guarded lookup — only resolves against `FIG-*` nodes; exact `reference_key` tried first, then fuzzy normalization fallback; never collides with Table refs
 - `resolved: false` for external-PDF targets
 
 **Appendix note references** → `clause.note_refs[]` — pattern: `See Note A-<identifier>`:
@@ -451,6 +453,9 @@ For note article IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` →
 - **Block equations**: each `<math>` tag in an Equation block → separate `EQ-N` ContentItem rendered with `st.latex()`
 - **Ingestion cache**: `storage/raw_{pdf_stem}.json` — avoids repeat API charges; bypassed with `--force-extract`
 - **Figures dir**: `storage/figures/` — base64 decoded to JPEG, hash-named (not FIG-N.jpg)
+- **Figure structured caption**: figures use a structured `caption` dict (not flat string) with fields `raw`, `figure_label`, `figure_number`, `title`; parsed by `_parse_figure_caption()` via `_RE_FIG_CAP_PARSE` regex; applied in `_enrich_figures_in_dict()` post-processing
+- **`reference_key` on figures**: canonical string `"Figure {figure_number}"` stored directly on the figure dict; used as the primary lookup key in `build_id_index()` and `_ref_to_id()` for exact figure matching
+- **Table caption trailing dot**: `parse_table_caption()` preserves the trailing `"."` in `table_number` and `table_label` when present in source (e.g. `"4.1.5.3."` not `"4.1.5.3"`); title field never starts with `"."`
 - **Document cache**: `api/main.py` caches as module globals; loaded on first request
 - **Fallback parsing**: `_flatten_legacy()` handles old Datalab format or markdown-only responses
 - **h0 headings**: SectionHeader blocks where Datalab assigns no h1–h6 tag (`parse_heading()` returns level=0); in BCBC 2024 these are 1275 article/sentence-level clause headings plus some Part headings — all routed in the h0 handler
@@ -475,7 +480,8 @@ For note article IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` →
 - **Notes state tracking**: `_build_hierarchy()` tracks `current_notes_section` and `current_note_clause`; state is reset on Division/Part/Appendix heading transitions; all non-Part headings and text blocks while in notes mode route to the notes handlers
 - **Note clause ID formula**: `_note_clause_id_for()` replaces `.`, `(`, `)` with `-` in the A-number; e.g. `A-4.1.1.3.(1)` → `CL-NOTE-A-4-1-1-3--1-`
 - **`_notes_section_index`**: dict `{sec_id → Section}` prevents duplicate notes sections when "Notes to Part N" heading is seen more than once
-- **SEC→CL fallback**: `_ref_to_id()` for Subsection/Section kind tries `SEC-` first; if not in id_index, tries `CL-` — handles cases where a 3-part numbered heading was parsed as a Clause rather than a Section
+- **Subsection prefix rule**: `_ref_to_id()` for `Subsection` kind always resolves to `SUBSEC-*` first; `SEC-*` is the fallback only when no `SUBSEC-*` node exists — never the primary target. This fixed all 416 previously-wrong `SEC-*` subsection refs.
+- **SEC→CL fallback**: `_ref_to_id()` for `Section` kind tries `SEC-` first; if not in id_index, tries `ART-` then `CL-` — handles cases where a 3-part numbered heading was parsed as an Article/Clause rather than a Section
 - **Deduplication**: reference linker tracks `(kind, ref)` tuples per clause; note linker tracks `note_ref` per clause
 - **`note_refs[]` is dynamic**: not part of the `Clause` dataclass — added to the dict by `reference_linker.link_references()`; `target_ids` now resolve to `CL-NOTE-*` IDs (previously resolved to `CL-AUTO-*`)
 - **Real Parts metric**: `sum(1 for ch in chapters if ch.get("number","").isdigit())` — excludes FRONT-N chapters from the "Parts" count in Stats
@@ -498,7 +504,7 @@ For note article IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` →
 | Tables | 469 |
 | Figures | 212 |
 | Equations | 110 |
-| Reference resolution | 84.7% (2,495/2,945) |
+| Reference resolution | 97.4% (2,867/2,945) |
 | Note resolution | 99.8% (920/922) |
 
 Unresolved cross-references (~15.3%) point to other volumes in the BCBC series not in this PDF. Only 2 note refs are unresolved (genuine external appendix notes).
@@ -539,4 +545,4 @@ streamlit run viewer_streamlit.py
 - Wire up unused AI pipeline functions (`classify_block`, `should_join_fragments`, `resolve_ambiguous_reference`) or remove them
 - Remove unused `pdfplumber` and `pymupdf` dependencies from `requirements.txt`
 - Improve `_resolve_hier_target()` to handle deeper nesting and edge cases where the hierarchy path points to a non-heading block type
-- Further increase reference resolution beyond 84.7% — remaining ~450 unresolved refs are likely genuine external-volume references, but some may be addressable with improved 3-part heading detection
+- Further increase reference resolution beyond 97.4% — remaining ~78 unresolved refs are likely genuine external-volume references pointing to other BCBC volumes not in this PDF

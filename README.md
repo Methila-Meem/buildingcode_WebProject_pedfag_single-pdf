@@ -21,10 +21,10 @@ PDF  →  Datalab Marker API  →  Structure Parser  →  Reference Linker  → 
 ## Features
 
 - **PDF extraction** via [Datalab Marker API](https://www.datalab.to) with local result caching
-- **Hierarchical parsing** — Division → Part → Section → Subsection → Clause → Sub-clause → Table / Figure / Equation
-- **Notes section extraction** — "Notes to Part N" segments parsed into dedicated `SEC-NOTES-*` sections inside each Part, holding `CL-NOTE-*` note clauses at the same level as regular code sections
-- **Cross-reference resolution** — `Sentence 4.1.6.5.(1)`, `Table 4.1.3.2.-A`, `Figure 4.1.6.5.-A` resolved to clickable links (84.7% resolution rate)
-- **Appendix note resolution** — `(See Note A-4.1.6.16.(6).)` resolved to `CL-NOTE-*` clause IDs and rendered as navigable buttons (99.8% resolution rate)
+- **Hierarchical parsing** — Division → Part → Section → Subsection → Article → Sentence → Clause → Sub-clause → Table / Figure / Equation
+- **Notes section extraction** — "Notes to Part N" segments parsed into dedicated `SEC-NOTES-*` sections inside each Part, holding `ART-NOTE-*` note articles at the same level as regular code sections
+- **Cross-reference resolution** — `Sentence 4.1.6.5.(1)`, `Table 4.1.3.2.-A`, `Figure 4.1.6.5.-A` resolved to clickable links (97.4% resolution rate)
+- **Appendix note resolution** — `(See Note A-4.1.6.16.(6).)` resolved to `ART-NOTE-*` article IDs and rendered as navigable buttons (99.8% resolution rate)
 - **Inline KaTeX math** — equations rendered in-browser
 - **Multi-row table headers** — colspan / rowspan parsed correctly; cross-page table fragments merged
 - **Full-text search** across all clause titles and content
