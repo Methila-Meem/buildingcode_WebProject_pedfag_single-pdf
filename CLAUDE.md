@@ -136,7 +136,7 @@ Unresolved references (~2.6%) are expected — they point to other PDFs in the B
 |---|---|
 | `inline_math_to_markdown(html)` | Converts `<math>` tags to `$...$` inline notation; strips remaining HTML → single markdown string |
 | `extract_math(html)` | Returns **list** of LaTeX strings (one per `<math>` tag) — each becomes a separate Equation ContentItem |
-| `listgroup_to_lines(html)` | Preserves `<math>` as `$...$`, strips other HTML, converts `</li>` to newlines |
+| `listgroup_to_lines(html)` | Preserves `<math>` as `$...$`, strips other HTML, inserts newlines before `<li>` opening tags and after `</li>` closing tags so nested list items always start on their own line |
 | `parse_table_html(html)` | Parses HTML tables with multi-row `<thead>` colspan/rowspan, `<tbody>` rowspan carry, bbox-based empty-cell carry, final-row sub-label skip, and spanning-rows last-row exception |
 | `strip_html(html)` | Removes tags, decodes entities, normalizes whitespace |
 | `_strip_html_keep_text(html)` | Strips all HTML **except** `<math>` markers; used when splitting inline-math blocks |
@@ -290,6 +290,7 @@ RE_SECTION   = r'^(?:Section\s+)?(\d+\.\d+)\.?\s*(.*)'   # re.IGNORECASE
 RE_ARTICLE   = r'^(\d+\.\d+\.\d+)\.?\s*(.*)'
 RE_SENTENCE  = r'^(\d+\.\d+\.\d+\.\d+)\.?\s*(.*)'        # checked before RE_ARTICLE
 RE_SUBCLAUSE = r'^\s*(\([a-z]+\)|[a-z]\)|[ivxlcdm]+\.)\s+(.+)'  # re.IGNORECASE
+RE_LEGAL_MARKER = r'^\s*(\([a-z]+\)|[ivx]{2,8}\)|[a-z]\))\s+(.*)'  # re.DOTALL|re.IGNORECASE — used in _process_article_text(); [ivx]{2,8} branch catches multi-char roman numerals like ii), iii), iv) at line start
 RE_FIGURE_NUM = r'Figure\s+([\d\.]+[\w\.\-]*)'  # caption fallback from alt text
 RE_NOTES_PART = r'^Notes\s+to\s+Part\s*(\d+)\s*(.*)'     # re.IGNORECASE — Priority 5 heading
 RE_NOTE_CLAUSE = r'^(A-(?:Table\s+)?[\d]+(?:\.[\d]+)*\.?(?:\(\d+\))?\.?)\s+(.*)'  # re.DOTALL|re.IGNORECASE — note clause number
@@ -442,7 +443,7 @@ For note article IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` →
 
 **Notes Section uniqueness:** Because multiple Divisions each have a Part 1 (e.g. PART-A-1 and PART-B-1), the notes section id is anchored to the full part id (`SEC-NOTES-PART-A-1` vs `SEC-NOTES-PART-B-1`) to prevent collisions in `_section_index`.
 
-**Clause vs Subclause detection:** `_is_roman_numeral(s)` checks if all chars are in `{i, v, x}`. A legal marker is a **Subclause** when it is roman AND a `current_clause_node` already exists; otherwise it is a **Clause** (resets `current_clause_node` for sibling clauses).
+**Clause vs Subclause detection:** `_is_roman_numeral(s)` checks if all chars are in `{i, v, x}`. A legal marker is a **Subclause** when it is roman AND a `current_clause_node` already exists; otherwise it is a **Clause** (resets `current_clause_node` for sibling clauses). Before line-by-line parsing, `_normalize_roman_subclause_boundaries(text)` inserts newlines before any inline multi-char roman numeral markers (`ii)`, `iii)`, `iv)` etc.) so sibling subclauses that arrive on the same text run are split into separate parseable boundaries. Only multi-char markers are split; single `i)` is left in place.
 
 ---
 
@@ -498,9 +499,9 @@ For note article IDs, `.` `(` `)` are all replaced with `-`: `A-4.1.1.3.(1)` →
 | Sections | 114 |
 | Subsections | 445 |
 | Articles | 3,118 (includes note articles) |
-| Sentences | 5,383 |
-| Clauses (lettered) | 3,695 |
-| Subclauses (roman) | 111 |
+| Sentences | 5,664 |
+| Clauses (lettered) | 4,201 |
+| Subclauses (roman) | 1,078 |
 | Tables | 469 |
 | Figures | 212 |
 | Equations | 110 |
