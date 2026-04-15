@@ -299,7 +299,12 @@ RE_SUBCLAUSE = re.compile(r'^\s*(\([a-z]+\)|[a-z]\)|[ivxlcdm]+\.)\s+(.+)', re.IG
 RE_SENT_MARKER = re.compile(r'^\s*(\d+)\)\s+(.*)', re.DOTALL)
 
 # Legal clause/subclause markers: (a), (b), a), (i), (ii), etc.
-RE_LEGAL_MARKER = re.compile(r'^\s*(\([a-z]+\)|[a-z]\))\s+(.*)', re.DOTALL | re.IGNORECASE)
+# The [ivx]{2,8}\) branch handles multi-char roman numerals at line start
+# (ii), iii), iv), etc.) that a single [a-z]\) would miss.
+RE_LEGAL_MARKER = re.compile(
+    r'^\s*(\([a-z]+\)|[ivx]{2,8}\)|[a-z]\))\s+(.*)',
+    re.DOTALL | re.IGNORECASE
+)
 
 # Figure caption number extraction
 RE_FIGURE_NUM = re.compile(r'Figure\s+([\d\.]+[\w\.\-]*)', re.IGNORECASE)
@@ -317,6 +322,41 @@ _ROMAN_CHARS = frozenset('ivx')
 def _is_roman_numeral(s: str) -> bool:
     """Return True if s consists only of i/v/x characters (common BCBC roman numerals)."""
     return len(s) > 0 and all(c in _ROMAN_CHARS for c in s.lower())
+
+
+# Pattern to detect inline multi-char roman numeral subclause markers that
+# appear MID-LINE rather than at a clean line boundary.
+# Matches: " ii) ", " iii) ", " iv) " etc. when preceded by non-whitespace.
+# Does NOT match single "i)" (handled by RE_LEGAL_MARKER single-char branch).
+# Does NOT match "(i)" references (those have a leading paren and are prose).
+_RE_INLINE_ROMAN_SPLIT = re.compile(
+    r'(?<=\S)(\s+)(ii|iii|iv|vi|vii|viii|ix|xi|xii|xiii|xiv|xv)\)\s+',
+    re.IGNORECASE
+)
+
+
+def _normalize_roman_subclause_boundaries(text: str) -> str:
+    """
+    Insert newlines before inline multi-char roman numeral subclause markers.
+
+    Handles the rare case where a Text block (not ListGroup) collapses nested
+    list items onto a single line, e.g.:
+        "...provided i) in the hallway...or ii) in each bedroom..."
+    becomes:
+        "...provided i) in the hallway...or\nii) in each bedroom..."
+
+    Safety conditions:
+    - Only splits on ii/iii/iv/vi/vii/viii/ix/xi/xii (multi-char roman numerals).
+    - Requires the marker to be preceded by a non-whitespace char (i.e., mid-line).
+    - Does not affect single 'i)' (already handled correctly by RE_LEGAL_MARKER).
+    - Does not affect '(ii)' parenthesised references (they have a leading paren).
+    - Since RE_LEGAL_MARKER uses '^', line-start markers are unaffected.
+    """
+    def _insert_newline(m: re.Match) -> str:
+        marker = m.group(2)
+        return f'\n{marker}) '
+
+    return _RE_INLINE_ROMAN_SPLIT.sub(_insert_newline, text)
 
 
 # =============================================================================
@@ -404,7 +444,11 @@ def parse_heading(html: str):
 
 def listgroup_to_lines(html: str) -> str:
     """Convert ListGroup HTML to newline-separated lines, preserving inline math."""
-    text_with_newlines = re.sub(r'</li>', '\n', html, flags=re.IGNORECASE)
+    # Insert newlines before <li> opening tags so nested list items always
+    # start on their own line (fixes bug where sentence text and first clause
+    # marker were merged, e.g. "conformance witha) CSA S269.1").
+    text_with_newlines = re.sub(r'<li[^>]*>', '\n', html, flags=re.IGNORECASE)
+    text_with_newlines = re.sub(r'</li>', '\n', text_with_newlines, flags=re.IGNORECASE)
     lines = []
     for raw_line in text_with_newlines.splitlines():
         if re.search(r'<math', raw_line, re.IGNORECASE):
@@ -1352,6 +1396,11 @@ class StructureParser:
 
             if has_inline_math:
                 text = inline_math_to_markdown(text)
+
+            # Normalize inline multi-char roman numeral subclause markers so
+            # sibling subclauses (ii), iii), etc.) each start on their own line.
+            # This is a no-op when they are already at line starts (ListGroup case).
+            text = _normalize_roman_subclause_boundaries(text)
 
             for line in text.splitlines():
                 line = line.strip()

@@ -1,8 +1,8 @@
 # Frontend Schema Briefing — BCBC 2024 Structured Document
 
-**Source file:** `storage/output/structured_document.json` (~43.6 MB)
+**Source file:** `storage/output/structured_document.json` (~43.4 MB)
 **Document:** British Columbia Building Code 2024 (1906 pages)
-**Last updated:** 2026-04-11 (post-fix regeneration — subsection IDs, table captions, figure schema)
+**Last updated:** 2026-04-15 (subclause boundary fix — nested roman numeral subclauses now parsed correctly; sentence/clause split correction for nested lists)
 
 ---
 
@@ -25,9 +25,9 @@ Cross-references and appendix note references are resolved and embedded per-arti
 | Sections | 114 |
 | Subsections | 445 |
 | Articles | 3,118 |
-| Sentences | 5,663 |
-| Clauses (lettered) | 3,695 |
-| Subclauses (roman) | 111 |
+| Sentences | 5,664 |
+| Clauses (lettered) | 4,201 |
+| Subclauses (roman) | 1,078 |
 | Tables | 469 |
 | Figures | 212 |
 | Equations | 110 |
@@ -1246,7 +1246,7 @@ function renderArticle(article: Article) {
 
 ## 9. Key Schema Changes vs Previous Version
 
-This section summarizes the breaking changes introduced in the 2026-04-11 regeneration. Any frontend code targeting the previous JSON must be updated.
+This section summarizes the breaking changes introduced in the 2026-04-11 and 2026-04-15 regenerations. Any frontend code targeting the previous JSON must be updated.
 
 | Area | Previous | Current | Action Required |
 |---|---|---|---|
@@ -1262,3 +1262,6 @@ This section summarizes the breaking changes introduced in the 2026-04-11 regene
 | **Figure `reference.lookup_key`** | Not present | `string` — `"Figure {number}"` | **Use** instead of `reference.text` for figure resolution |
 | **`table.headers` type** | `string[]` | `Header[]` objects `{ index, text }` | **Update** — read `header.text` not the string directly |
 | **`table.rows` type** | `string[][]` | `Row[]` objects with `cells[]` | **Update** — read `row.cells[i].value` not `row[i]` |
+| **Subclauses (roman) count** | 111 | 1,078 | No action — more subclauses now parsed as distinct nodes |
+| **Clauses (lettered) count** | 3,695 | 4,201 | No action — nested list clauses now parsed correctly |
+| **Sentence content truncation** | May include first clause marker inline | Sentence content ends cleanly before clause list | No action — fix was applied in parser |

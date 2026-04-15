@@ -9,7 +9,7 @@ Two types of references handled:
 1. Standard references (Sentence/Article/Section/Table/Figure):
    Sentence 4.1.6.5.(1)   -> CL-4-1-6-5
    Article 4.1.6.5.        -> CL-4-1-6-5
-   Subsection 4.1.6.       -> SEC-4-1-6  (always SEC-)
+   Subsection 4.1.6.       -> SUBSEC-4-1-6  (always SUBSEC-; SEC- is fallback only)
    Section 4.1.            -> SEC-4-1
    Table 4.1.3.2.-A        -> TBL-N (caption lookup)
    Figure 4.1.6.5.-A       -> FIG-N (caption lookup)
@@ -376,8 +376,9 @@ def _ref_to_id(ref: str, kind: str, id_index: dict,
       - Use normalized comparison (dots/hyphens stripped) for fuzzy caption
         matching so source-PDF typos resolve correctly.
 
-    Subsection always maps to SEC- regardless of the number of dot-parts.
-    "4.1.4" has 3 parts but is still a Subsection (SEC-4-1-4), not a Clause.
+    Subsection always maps to SUBSEC- regardless of the number of dot-parts.
+    "4.1.4" has 3 parts but is still a Subsection (SUBSEC-4-1-4), not a Clause.
+    SEC- is a fallback only when no SUBSEC- node exists in the id_index.
     """
     kind_lower = kind.lower()
     # Normalize: strip trailing dot before building the fallback ID

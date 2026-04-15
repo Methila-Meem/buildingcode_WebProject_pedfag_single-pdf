@@ -1,268 +1,109 @@
-Fix the remaining reference and figure-linking issues in my production parser/output.
+Fix only the remaining subclause boundary parsing bug in my production parser without breaking the current correct logic for sentences, clauses, and already-correct subclauses.
 
 FILES
-- @parser\structure_parser.py
-- @storage\output\structured_document.json
-- @bcbc_2024_web_version_revision2.pdf
+- structure_parser.py
+- structured_document.json
 
-MAIN GOAL
-Update the parser and regenerated JSON so these three issues are fixed everywhere in the full document.
+ISSUE
+Clause parsing is now mostly correct, but repeated subclauses are still being merged incorrectly when roman numeral markers appear inline instead of at a clean line boundary.
 
-==================================================
-ISSUE 1 — WRONG target_id PREFIX FOR SUBSECTIONS
-==================================================
+Example problem shape:
+- i) Group A ...
+- ii) Group B ...
+- iii) Group F ...
 
-Current bad example:
-{
-  "text": "Subsection 3.7.2.",
-  "kind": "Subsection",
-  "number": "3.7.2",
-  "target_id": "SEC-3-7-2",
-  "resolved": false
-}
+In some extracted blocks, only the first subclause is parsed correctly, while later sibling subclauses like ii), iii), iv) remain inside the previous clause/subclause content.
 
-Expected:
-{
-  "text": "Subsection 3.7.2.",
-  "kind": "Subsection",
-  "number": "3.7.2",
-  "target_id": "SUBSEC-3-7-2",
-  "resolved": true
-}
+This causes wrong restructuring such as:
+- clause.content contains "ii) Group B ... iii) Group F ..."
+instead of:
+- subclause (i)
+- subclause (ii)
+- subclause (iii)
 
-RULE:
-- Any reference with "kind": "Subsection" must resolve to a SUBSEC-* id, never SEC-*.
-- Claude must check all extracted references globally and fix every subsection mismatch.
-- If the referenced subsection exists in the document hierarchy, set:
-  - target_id = SUBSEC-x-x-x
-  - resolved = true
-- If it truly does not exist, keep:
-  - target_id = ""
-  - resolved = false
-- Never assign SEC-* to a Subsection reference.
+IMPORTANT CONSTRAINT
+Do NOT redesign the schema.
+Do NOT change the existing hierarchy model.
+Do NOT break currently correct parsing for:
+- sentence markers
+- clause markers
+- already-correct subclause markers
+- references like Clause (a), Subclause (i)
 
-This must apply everywhere:
-- table references
-- clause references
-- sentence references
-- article references
-- note references
-- any parsed reference object
+This must be a minimal, targeted fix for inline roman subclause boundaries only.
 
-==================================================
-ISSUE 2 — TABLE CAPTION PARSING FORMAT BUG
-==================================================
+ROOT CAUSE
+The parser still depends too much on line-start detection inside _process_article_text().
+Subclause markers like i), ii), iii), iv) are sometimes arriving inline in the same text run, so later sibling subclauses are not split into separate parse units before parsing.
 
-Current bad example:
-{
-  "id": "TBL-208",
-  "caption": {
-    "raw": "Table 4.1.5.3. Specified Uniformly Distributed Live Loads on an Area of Floor or Roof Forming Part of Sentence 4.1.5.3.(1)",
-    "table_number": "4.1.5.3",
-    "table_label": "Table 4.1.5.3",
-    "title": ". Specified Uniformly Distributed Live Loads on an Area of Floor or Roof",
-    "forming_part_of": {
-      "kind": "Sentence",
-      "raw": "Sentence 4.1.5.3.(1)",
-      "number": "4.1.5.3.(1)",
-      "target_id": "SENT-4-1-5-3-1",
-      "resolved": true
-    }
-  }
-}
+CURRENT RELEVANT LOGIC
+- listgroup_to_lines() already inserts newlines before <li>
+- _process_article_text() parses line by line
+- clause/subclause detection depends on RE_LEGAL_MARKER and roman numeral handling
+- current logic correctly identifies subclauses only when they appear as isolated parseable markers
 
-Expected:
-{
-  "id": "TBL-208",
-  "caption": {
-    "raw": "Table 4.1.5.3. Specified Uniformly Distributed Live Loads on an Area of Floor or Roof Forming Part of Sentence 4.1.5.3.(1)",
-    "table_number": "4.1.5.3.",
-    "table_label": "Table 4.1.5.3.",
-    "title": "Specified Uniformly Distributed Live Loads on an Area of Floor or Roof",
-    "forming_part_of": {
-      "kind": "Sentence",
-      "raw": "Sentence 4.1.5.3.(1)",
-      "number": "4.1.5.3.(1)",
-      "target_id": "SENT-4-1-5-3-1",
-      "resolved": true
-    }
-  }
-}
+WHAT TO FIX
+Apply a minimal normalization step so repeated inline roman numeral subclauses become separate parseable boundaries before the existing parsing logic runs.
 
-RULES:
-- table_number must preserve the trailing full stop when present in the source:
-  - "4.1.5.3."
-- table_label must also preserve it:
-  - "Table 4.1.5.3."
-- title must NOT start with a leading "."
-- caption parsing must correctly split:
-  1. table label
-  2. title
-  3. forming_part_of reference
-- Apply this fix for all tables in the full document.
+SAFE FIX STRATEGY
+1. Keep existing sentence/clause parsing logic intact.
+2. Add a narrowly targeted preprocessing step before _process_article_text() parses lines.
+3. Only split roman numeral markers when they are clearly acting as sibling subclauses in legal list text.
+4. Do not blindly split every "i)" or "(i)" occurrence in prose.
 
-==================================================
-ISSUE 3 — FIGURE LINKING SCHEMA IS TOO WEAK
-==================================================
+TARGET CASES TO FIX
+Examples like:
+- "... classified as i) Group A ... ii) Group B ... iii) Group F ..."
+- "... occupancies, or i) Group C ... ii) Group D ..."
+- "... provided i) ... ii) ... iii) ..."
 
-Current figure example:
-{
-  "id": "FIG-55",
-  "caption": "Figure 4.1.6.5.-A",
-  "alt_text": "...",
-  "image_key": "...",
-  "image_path": "...",
-  "page": 530
-}
+Expected result:
+- i), ii), iii), iv) become separate sibling subclauses under the same clause
 
-Current reference example:
-{
-  "text": "Figure 4.1.6.5.-A",
-  "kind": "Figure",
-  "number": "4.1.6.5.-A",
-  "target_id": "FIG-55",
-  "resolved": true,
-  "source": "caption"
-}
+MUST NOT BREAK
+Do not incorrectly split:
+- references like "Subclause (i)"
+- citations or explanatory prose containing "(i)"
+- already-correct line-start markers
+- cases where roman numerals are not acting as list markers
 
-Problem:
-- The system is confusing figure text/number matching, so hyperlinking often fails.
-- Figure id alone is not enough.
-- Figure caption string is not normalized enough for reliable matching.
+IMPLEMENTATION GUIDANCE
+Make the smallest safe change possible in structure_parser.py.
 
-REQUIRED SOLUTION
-Refactor figure schema so figures have explicit parsed identifier metadata, similar to tables.
+Recommended approach:
+- add a helper that normalizes inline roman numeral subclause markers into separate line boundaries only in likely legal-list contexts
+- apply it before line-by-line parsing in _process_article_text()
+- preserve existing logic for creating:
+  - Clause
+  - Subclause
+- extend marker handling only if necessary to recognize inline roman numeral forms like:
+  - i)
+  - ii)
+  - iii)
+  - iv)
+  - (i)
+  - (ii)
 
-Use a schema like this:
+Be conservative:
+- only split when marker is followed by actual prose
+- only split when it appears in a context consistent with legal list continuation
+- avoid changing behavior for non-list prose
 
-{
-  "id": "FIG-55",
-  "caption": {
-    "raw": "Figure 4.1.6.5.-A",
-    "figure_label": "Figure 4.1.6.5.-A",
-    "figure_number": "4.1.6.5.-A",
-    "title": ""
-  },
-  "alt_text": "...",
-  "image_key": "...",
-  "image_path": "...",
-  "page": 530,
-  "page_span": [530],
-  "reference_key": "Figure 4.1.6.5.-A"
-}
+VALIDATION
+After the fix, verify:
+1. broken repeated roman subclauses are separated correctly into sibling subclauses
+2. the first subclause still parses correctly
+3. later subclauses like ii), iii), iv) are no longer absorbed into previous content
+4. current correct sentence/clause parsing remains unchanged
+5. references like "Subclause (i)" are not falsely split
+6. output schema remains unchanged
 
-REFERENCE RULES FOR FIGURES
-- Every figure must have:
-  - caption.raw
-  - caption.figure_label
-  - caption.figure_number
-  - reference_key
-- reference_key should be the canonical matching key used for hyperlink resolution.
-- Reference objects pointing to figures should match primarily against:
-  1. figure.reference_key
-  2. figure.caption.figure_label
-  3. figure.caption.figure_number
-
-Reference example:
-{
-  "text": "Figure 4.1.6.5.-A",
-  "kind": "Figure",
-  "number": "4.1.6.5.-A",
-  "lookup_key": "Figure 4.1.6.5.-A",
-  "target_id": "FIG-55",
-  "resolved": true,
-  "source": "caption"
-}
-
-FIGURE MATCHING RULES
-- Normalize figure matching consistently.
-- Preserve suffixes like "-A", "-B"
-- Do not confuse:
-  - Figure 4.1.6.5.-A
-  - Table 4.1.6.5.-A
-- Figure references must only resolve against figures.
-- Table references must only resolve against tables.
-- Matching must be exact after normalization.
-
-RECOMMENDED NORMALIZATION
-Create canonical keys for tables and figures:
-- Table canonical key:
-  "Table 4.1.5.3."
-- Figure canonical key:
-  "Figure 4.1.6.5.-A"
-
-Use canonical keys during resolution rather than fuzzy caption matching.
-
-==================================================
-IMPLEMENTATION TASKS
-==================================================
-
-Update structure_parser.py so it does all of the following:
-
-1. GLOBAL SUBSECTION REFERENCE FIX
-- audit all reference resolution logic
-- ensure "kind": "Subsection" maps only to SUBSEC-* ids
-- never generate SEC-* target ids for subsection references
-
-2. TABLE CAPTION PARSER FIX
-- preserve trailing dot in table_number and table_label
-- strip accidental leading punctuation from title
-- correctly parse "Forming Part of Sentence ..."
-
-3. FIGURE SCHEMA REFACTOR
-- change figures from flat caption string to structured caption object
-- add figure_label
-- add figure_number
-- add reference_key
-- improve figure reference matching and resolution
-
-4. REGENERATION
-- regenerate structured_document.json
-- replace the old structured_document.json
-
-==================================================
-VALIDATION CHECKS
-==================================================
-
-After regeneration verify:
-
-A. Subsection references
-- no Subsection reference points to SEC-*
-- valid subsection refs point to SUBSEC-*
-- subsection resolved flags are correct
-
-B. Tables
-- table_number preserves trailing period when present
-- table_label preserves trailing period when present
-- title does not begin with "."
-- forming_part_of remains correct
-
-C. Figures
-- figures use structured caption object
-- figure references resolve using canonical keys
-- Figure refs do not collide with Table refs
-- hyperlinking for figures can use exact figure match text like:
-  "Figure 4.1.6.5.-A"
-
-D. Output integrity
-- structured_document.json remains valid
-- existing data is preserved as much as possible
-- top-level schema remains unchanged
-
-==================================================
 DELIVERABLES
-==================================================
-
 1. updated structure_parser.py
-2. updated structured_document.json
+2. regenerated structured_document.json only if needed for validation
 
-==================================================
 FINAL REPORT
-==================================================
-
-At the end, report briefly:
-- how subsection target_id resolution was fixed
-- how table caption parsing was fixed
-- what figure schema was introduced
-- whether structured_document.json was replaced successfully
-- any ambiguous unresolved references that may still need manual review
+Briefly report:
+- what minimal normalization/change was added for inline roman subclauses
+- why it is safe
+- whether repeated sibling subclauses now parse correctly without breaking current correct logic
